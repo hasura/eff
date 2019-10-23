@@ -9,7 +9,7 @@ module Control.Effect.Reader
 
 import qualified Control.Monad.Trans.Reader as Trans
 
-import Control.Effect
+import Control.Effect.Internal
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
 
 -- | @'Reader' r@ is an effect that provides access to a global environment of type @r@.

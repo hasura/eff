@@ -273,8 +273,8 @@ instance (Monad m, Handle (Handles t eff) eff t m) => Send eff t m where
   {-# INLINE sendWith #-}
 
 -- | Using 'MonadTransControl', lifts a higher-order effectful operation into the underlying monad.
--- It is named by analogy to 'Control.Monad.Trans.Control.control', since both are intended for
--- lifting “control operations,” i.e. operations that affect control flow.
+-- It is named by analogy to 'control', since both are intended for lifting “control operations,”
+-- i.e. operations that affect control flow.
 --
 -- @'controlT' f@ is equivalent to @'restoreT' '.' 'pure' =<< 'liftWith' f@, but it is rare that
 -- 'restoreT' or 'liftWith' need to be used directly.

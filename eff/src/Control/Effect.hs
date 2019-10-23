@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 {-|
 
 This library is an implementation of an /extensible effect system/ for Haskell, a general-purpose
@@ -12,7 +14,7 @@ against a concrete stack of monad transformers can make reuse difficult and teth
 particular implementation of each effect. The @mtl@ library provides a partial solution to this
 problem by providing a typeclass for each effect, which allow programmers to parameterize
 computations over the monad they are executed in. However, that technique has problems of its own,
-most notably that it requires /m/*/n/ instances be written for code that uses /m/ distinct effects
+most notably that it requires /m/×/n/ instances be written for code that uses /m/ distinct effects
 and /n/ distinct effect implementations.
 
 @eff@ is a reformulation of @mtl@ that avoids the “quadratic instance” problem. Like @mtl@, it uses
@@ -20,15 +22,14 @@ monad transformers to represent effect implementations, which @eff@ calls effect
 uses typeclasses to represent effects. Unlike @mtl@, @eff@ uses a slightly different encoding that
 allows explicit instances to be written /only/ for the effects handled by each transformer,
 requiring a linear rather than quadratic number of instances. It achieves this without any use of
-overlapping instances or Template Haskell by keeping track of a little extra information at the
-type level that can be used to guide instance selection.
+overlapping instances or Template Haskell by keeping track of a little extra information at the type
+level that can be used to guide instance selection.
 
 Generally speaking, this library provides two discrete (but related) chunks of functionality:
 
-  1. First, @eff@ provides a library of common effects, such as 'Control.Effect.Reader',
-     'Control.Effect.Error', and 'Control.Effect.State', as well as handlers for them. These can be
-     used out of the box the same way @transformers@ and @mtl@ can be, and they use a similar
-     interface.
+  1. First, @eff@ provides a library of common effects, such as 'Reader', 'Error', and 'State', as
+     well as handlers for them. These can be used out of the box the same way @transformers@ and
+     @mtl@ can be, and they use a similar interface.
 
   2. Second, @eff@ exposes the infrastructure necessary to define /your own/ effects and effect
      handlers, all of which automatically cooperate with the built-in effects and any effects
@@ -44,9 +45,9 @@ Compared to other Haskell effect system libraries, such as @freer@, @polysemy@, 
 
   * Unlike other effect systems, @eff@ interoperates with the rest of the @transformers@ ecosystem
     by design. Its core effect handlers /are/ the monad transformers provided by @transformers@, and
-    it uses the standard 'Control.Monad.Trans.Control.MonadTransControl' class from @monad-control@
-    to implement the lifting of higher-order effects. It is easy to reuse functionality from the
-    @transformers@ and @mtl@ ecosystems with @eff@.
+    it uses the standard 'MonadTransControl' class from @monad-control@ to implement the lifting of
+    higher-order effects. It is easy to reuse functionality from the @transformers@ and @mtl@
+    ecosystems with @eff@.
 
   * Despite its use of monad transformers and its focus on performance, defining effects and effect
     handlers in @eff@ requires relatively little boilerplate, though @freer-simple@ and @polysemy@
@@ -89,64 +90,73 @@ module Control.Effect (
 import Control.Effect.Internal
 import Data.Type.Equality (type (==))
 
+#ifdef __HADDOCK_VERSION__
+import Control.Effect.Reader
+import Control.Effect.State
+import Control.Effect.Error
+import Control.Monad.IO.Class
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Control
+#endif
+
 {-$using_effects
 
 Effects in @eff@ are little more than ordinary typeclasses on monads. To show an example, the
-definition of the standard 'Control.Effect.Reader.Reader' effect, which provides access to a global
-environment, is written roughly as follows:
+definition of the standard 'Reader' effect, which provides access to a global environment, is
+written roughly as follows:
 
 @
-class 'Monad' m => 'Control.Effect.Reader.Reader' r m where
-  'Control.Effect.Reader.ask' :: m r
-  'Control.Effect.Reader.local' :: (r -> r) -> m a -> m a
+class 'Monad' m => 'Reader' r m where
+  'ask' :: m r
+  'local' :: (r -> r) -> m a -> m a
 @
 
-If you’re already familiar with @mtl@, this class may look familiar to you, and indeed,
-'Control.Effect.Reader.Reader' is effectively identical to the @MonadReader@ class from @mtl@, but
-without the functional dependency from @m@ to @r@.
+If you’re already familiar with @mtl@, this class may look familiar to you, and indeed, 'Reader' is
+effectively identical to the @MonadReader@ class from @mtl@, but without the functional dependency
+from @m@ to @r@.
 
 To write a function that uses a particular effect, simply add the effect as a constraint in the
-function’s type signature. For example, the following function uses 'Control.Effect.Reader.Reader'
-to get access to a 'String', combines it with its argument, then prints the result to the console:
+function’s type signature. For example, the following function uses 'Reader' to get access to a
+'String', combines it with its argument, then prints the result to the console:
 
 @
-printSuffixed :: ('Control.Effect.Reader.Reader' 'String' m, 'Control.Monad.IO.Class.MonadIO' m) => 'String' -> m ()
+printSuffixed :: ('Reader' 'String' m, 'MonadIO' m) => 'String' -> m ()
 printSuffixed suffix = do
-  message <- 'Control.Effect.Reader.ask' @'String'
-  'Control.Monad.IO.Class.liftIO' '$' 'putStrLn' (message '<>' suffix)
+  message <- 'ask' @'String'
+  'liftIO' '$' 'putStrLn' (message '<>' suffix)
 @
 
 To /run/ an effectful computation, use an /effect handler/. A single effect may have many different
 effect handlers—for example, an effect that provides access to the filesystem might have both a real
 implementation and one that uses an in-memory, virtual file system for testing—so the choice of what
 an effect actually does is chosen when an effect is handled, not where it’s used. In the case of
-'Control.Effect.Reader.Reader', we’ll use the built-in handler, 'Control.Effect.Reader.runReader',
-which just supplies the value that will be returned by 'Control.Effect.Reader.ask':
+'Reader', we’ll use the built-in handler, 'runReader', which just supplies the value that will be
+returned by 'ask':
 
 @
->>> 'Control.Effect.Reader.runReader' \"Hello\" '$' printSuffixed \", world!\"
+>>> 'runReader' \"Hello\" '$' printSuffixed \", world!\"
 Hello, world!
 @
 
 How does this work? Take a look at the type of the above expression:
 
 @
->>> :t 'Control.Effect.Reader.runReader' \"Hello\" '$' printSuffixed \", world!\"
-'Control.Monad.IO.Class.MonadIO' m => m ()
+>>> :t 'runReader' \"Hello\" '$' printSuffixed \", world!\"
+'MonadIO' m => m ()
 @
 
-Notice that by using the 'Control.Effect.Reader.runReader' handler, the
-@'Control.Effect.Reader.Reader' 'String'@ effect was “discharged” from the constraints, leaving only
-'Control.Monad.IO.Class.MonadIO'. This is how effects and effect handlers, work: a computation may
-use many different effects, and they are handled one at a time by handlers until none are left.
+Notice that by using the 'runReader' handler, the @'Reader' 'String'@ effect was “discharged” from
+the constraints, leaving only 'MonadIO'. This is how effects and effect handlers, work: a
+computation may use many different effects, and they are handled one at a time by handlers until
+none are left.
 
 This library provides a handful of general-purpose, built-in effects. Most of them are a little more
-complicated than 'Control.Effect.Reader.Reader', but they all work the same basic way: add
-constraints to use effects, then use handlers to discharge them. In many applications, it may make
-sense to build up a giant list of effect constraints, then discharge them all at the top-level of
-your program, in the @main@ function. In other situations, it may make sense to discharge effects
-incrementally, sprinkling handlers throughout the code. Both of these approaches are supported, so
-the decision of how to take advantage of effects is up to you. -}
+complicated than 'Reader', but they all work the same basic way: add constraints to use effects,
+then use handlers to discharge them. In many applications, it may make sense to build up a giant
+list of effect constraints, then discharge them all at the top-level of your program, in the @main@
+function. In other situations, it may make sense to discharge effects incrementally, sprinkling
+handlers throughout the code. Both of these approaches are supported, so the decision of how to take
+advantage of effects is up to you. -}
 
 {-$defining_effects
 
@@ -193,10 +203,9 @@ the function, not just in the result (or more precisely, uses of @m@ in negative
 @withFile@ also requires “lowering” the action produced by the callback. This kind of effect is
 called a /higher-order/, or /scoped/, effect.
 
-The 'Control.Monad.Trans.Control.MonadTransControl' class from the @monad-control@ package is
-designed to lift higher-order effects. While 'Control.Monad.Trans.Class.MonadTrans' provides the
-power to 'Control.Monad.Trans.Class.lift' actions, 'Control.Monad.Trans.Control.MonadTransControl'
-provides the additional power to lower certain actions in the process.
+The 'MonadTransControl' class from the @monad-control@ package is designed to lift higher-order
+effects. While 'MonadTrans' provides the power to 'lift' actions, 'MonadTransControl' provides the
+additional power to lower certain actions in the process.
 
 To update the @FileSystem@ instance for 'EffT', it is necessary to use the more powerful 'sendWith'
 operation to implement @withFile@. 'sendWith' accepts two arguments instead of one: the first
@@ -211,8 +220,8 @@ looks like this:
     ('controlT' '$' \\lower -> writeFile path mode (lower '.' 'runEffT' '.' f))
 @
 
-A full explanation of 'Control.Monad.Trans.Control.MonadTransControl' is outside the scope of this
-documentation; see the documentation for "Control.Monad.Trans.Control" for more details. -}
+A full explanation of 'MonadTransControl' is outside the scope of this documentation; see the
+documentation for "Control.Monad.Trans.Control" for more details. -}
 
 {-$handling_effects
 
@@ -259,9 +268,9 @@ it is not relevant just yet. For now, just define an ordinary instance of @FileS
 @FileSystemIOT@:
 
 @
-instance 'Control.Monad.IO.Class.MonadIO' m => FileSystem (FileSystemIOT m) where
-  readFile path = 'Control.Monad.IO.Class.liftIO' '$' "System.IO".'readFile' path
-  writeFile path contents = 'Control.Monad.IO.Class.liftIO' '$' "System.IO".'writeFile' path contents
+instance 'MonadIO' m => FileSystem (FileSystemIOT m) where
+  readFile path = 'liftIO' '$' "System.IO".'readFile' path
+  writeFile path contents = 'liftIO' '$' "System.IO".'writeFile' path contents
 @
 
 The next step is to teach @eff@ that @FileSystemIOT@ is a handler for the @FileSystem@ effect, as
@@ -299,7 +308,7 @@ copyFile inPath outPath = do
   contents <- readFile inPath
   writeFile outPath contents
 
-copyFileIO :: 'Control.Monad.IO.Class.MonadIO' m => 'FilePath' -> 'FilePath' -> m ()
+copyFileIO :: 'MonadIO' m => 'FilePath' -> 'FilePath' -> m ()
 copyFileIO inPath outPath = runFileSystemIO '$' copyFile inPath outPath
 @
 
@@ -317,54 +326,50 @@ new type-level tag for the effect:
 data FileSystemPure
 @
 
-The next step is to define a @FileSystem@ instance, but this time, the instance won’t use
-'Control.Monad.IO.Class.MonadIO'. Instead, it will delegate to two different effets: a
-'Control.Effect.State.State' effect to store the virtual filesystem and a
-'Control.Effect.Error.Error' effect to handle errors. In this case, the @FileSystemPureT@ handler
-should keep the 'Control.Effect.State.State' effect “private”—it should be an implementation detail
-of the handler that does not leak out into calling code—but the 'Control.Effect.Error.Error' effect
-should defer the choice of handler to the caller. This is where the second argument to 'HandlerT'
-comes in. Any “private” effect handlers should go in that list, so @FileSystemPureT@ can be defined
-as follows:
+The next step is to define a @FileSystem@ instance, but this time, the instance won’t use 'MonadIO'.
+Instead, it will delegate to two different effets: a 'State' effect to store the virtual filesystem
+and a 'Error' effect to handle errors. In this case, the @FileSystemPureT@ handler should keep the
+'State' effect “private”—it should be an implementation detail of the handler that does not leak out
+into calling code—but the 'Error' effect should defer the choice of handler to the caller. This is
+where the second argument to 'HandlerT' comes in. Any “private” effect handlers should go in that
+list, so @FileSystemPureT@ can be defined as follows:
 
 @
 -- | A mapping from file paths to file contents.
 type VirtualFileSystem = [('FilePath', 'String')]
 
-type FileSystemPureT = 'HandlerT' FileSystemPure '['Control.Effect.State.StateT' VirtualFileSystem]
+type FileSystemPureT = 'HandlerT' FileSystemPure '['StateT' VirtualFileSystem]
 type instance 'Handles' FileSystemPureT eff = eff 'Data.Type.Equality.==' FileSystem
 @
 
 The “public” effects are not specified on the handler type itself, as they are attached to the
-handler instances themselves (like 'Control.Monad.IO.Class.MonadIO' was attached to the @FileSystem@
-instance for @FileSystemIOT@). Here is the instance for @FileSystemPureT@:
+handler instances themselves (like 'MonadIO' was attached to the @FileSystem@ instance for
+@FileSystemIOT@). Here is the instance for @FileSystemPureT@:
 
 @
-instance 'Control.Effect.Error.Error' 'String' m => FileSystem (FileSystemPureT m) where
+instance 'Error' 'String' m => FileSystem (FileSystemPureT m) where
   readFile path = 'HandlerT' '$' do
-    fileSystem <- 'Control.Effect.State.get'
+    fileSystem <- 'get'
     case 'lookup' path fileSystem of
       'Just' contents -> 'pure' contents
-      'Nothing'       -> 'Control.Effect.Error.throw' ("readFile: no such file " '<>' path)
+      'Nothing'       -> 'throw' ("readFile: no such file " '<>' path)
 
   writeFile path contents = 'HandlerT' '$' do
-    fileSystem <- 'Control.Effect.State.get'
+    fileSystem <- 'get'
     -- add the new file and remove an old file with the same name, if it exists
-    'Control.Effect.State.put' ((path, contents) : 'filter' (('/=' path) '.' 'fst') fileSystem)
+    'put' ((path, contents) : 'filter' (('/=' path) '.' 'fst') fileSystem)
 @
 
 Finally, we define the handler function. This handler function will be a little more interesting
-than @runFileSystemIO@ because it will discharge the @('Control.Effect.State.State'
-VirtualFileSystem)@ effect /locally/, keeping the implementation details of the @FileSystemPure@
-handler hidden:
+than @runFileSystemIO@ because it will discharge the @('State' VirtualFileSystem)@ effect /locally/,
+keeping the implementation details of the @FileSystemPure@ handler hidden:
 
 @
 runFileSystemPure :: 'EffT' ('HandlerT' FileSystemPure) m a -> m a
-runFileSystemPure = 'Control.Effect.State.evalState' [] '.' 'runHandlerT' '.' 'runEffT'
+runFileSystemPure = 'evalState' [] '.' 'runHandlerT' '.' 'runEffT'
 @
 
 This demonstrates an important capability of effect handlers: not only are they modular, they don’t
-all have to be run together at once. This allows @runFileSystemPure@ to handle the
-'Control.Effect.State.State' effect locally but pass the 'Control.Effect.Error.Error' effect on to
-its caller. The capability allows handlers to be reused to define other effects without leaking
-their implementation details. -}
+all have to be run together at once. This allows @runFileSystemPure@ to handle the 'State' effect
+locally but pass the 'Error' effect on to its caller. The capability allows handlers to be reused to
+define other effects without leaking their implementation details. -}

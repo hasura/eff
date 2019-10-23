@@ -13,7 +13,7 @@ module Control.Effect.Error
 
 import qualified Control.Monad.Trans.Except as Trans
 
-import Control.Effect
+import Control.Effect.Internal
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 
 -- | @'Error' e@ is an effect that allows throwing and catching errors of type @e@. Note that these

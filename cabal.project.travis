@@ -1,2 +1,5 @@
 documentation: true
 tests: true
+
+package eff
+  ghc-options: -Werror

@@ -16,7 +16,7 @@ module Control.Effect.State
 
 import qualified Control.Monad.Trans.State.Strict as Trans
 
-import Control.Effect
+import Control.Effect.Internal
 import Control.Monad.Trans.State.Strict (StateT, execStateT, evalStateT, runStateT)
 import Data.Tuple
 
