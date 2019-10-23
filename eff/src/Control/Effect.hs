@@ -43,11 +43,11 @@ Compared to other Haskell effect system libraries, such as @freer@, @polysemy@, 
     faster than @freer@ or @polysemy@ on real workloads. It is designed specifically to take
     advantage of the GHC optimizer by cooperating with specialization as much as possible.
 
-  * Unlike other effect systems, @eff@ interoperates with the rest of the @transformers@ ecosystem
-    by design. Its core effect handlers /are/ the monad transformers provided by @transformers@, and
-    it uses the standard 'MonadTransControl' class from @monad-control@ to implement the lifting of
-    higher-order effects. It is easy to reuse functionality from the @transformers@ and @mtl@
-    ecosystems with @eff@.
+  * @eff@ integrates well with the existing @transformers@ ecosystem. Effect handlers in @eff@
+    are ordinary monad transformers, and many built-in effects are handled by the ordinary
+    transformers from the @transformers@ package. As in @fused-effects@, existing transformers can
+    be easily adapted into effect handlers, but @eff@ goes a step further by allowing existing
+    @mtl@-style typeclasses to be used as effects, just by defining a couple small instances.
 
   * Despite its use of monad transformers and its focus on performance, defining effects and effect
     handlers in @eff@ requires relatively little boilerplate, though @freer-simple@ and @polysemy@
