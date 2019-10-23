@@ -1,6 +1,6 @@
-# `eff` — screaming fast extensible effects for less
+# `eff` — screaming fast extensible effects for less [![Build Status](https://travis-ci.org/lexi-lambda/eff.svg?branch=master)](https://travis-ci.org/lexi-lambda/eff)
 
-**🚧🚧 This library is currently under construction. 🚧🚧**
+**🚧 This library is currently under construction. 🚧**
 
 `eff` is a work-in-progress implementation of an *extensible effect system* for Haskell, a general-purpose solution for tracking effects at the type level and handling them in flexible ways. Compared to other effect systems currently available, `eff` differentiates itself in the following respects:
 

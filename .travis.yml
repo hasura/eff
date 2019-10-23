@@ -1,0 +1,16 @@
+language: haskell
+cabal: '3.0'
+ghc: [8.6, 8.8]
+
+cache:
+  directories:
+  - $HOME/.cabal/bin
+  - $HOME/.cabal/packages
+  - $HOME/.cabal/store
+
+install:
+- cp cabal.project.travis cabal.project.local
+- cabal new-update
+- cabal new-build all --only-dependencies
+script:
+- cabal new-test all --test-show-details=always
