@@ -21,7 +21,7 @@ common common
     -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
 
   build-depends:
-    , base ^>=4.13
+    , base >=4.12 && <5
     , monad-control ^>=1
     , transformers <1
     , transformers-base <1
