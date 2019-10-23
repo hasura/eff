@@ -1,0 +1,61 @@
+cabal-version: 3.0
+name: eff
+version: 0.0.0.0
+category: Control
+build-type: Simple
+
+author: Alexis King
+maintainer: Alexis King <lexi.lambda@gmail.com>
+homepage: https://github.com/lexi-lambda/eff
+bug-reports: https://github.com/lexi-lambda/eff/issues
+
+license: ISC
+copyright: 2019 Hasura, Alexis King
+
+source-repository head
+  type: git
+  location: https://github.com/lexi-lambda/eff
+
+common common
+  ghc-options:
+    -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+
+  build-depends:
+    , base ^>=4.13
+    , monad-control ^>=1
+    , transformers <1
+    , transformers-base <1
+
+  default-language: Haskell2010
+  default-extensions:
+    ApplicativeDo BangPatterns ConstraintKinds DataKinds DefaultSignatures DeriveDataTypeable
+    DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies
+    DerivingVia EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances
+    FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase
+    MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedStrings PatternSynonyms
+    QuantifiedConstraints RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections
+    TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators ViewPatterns
+
+library
+  import: common
+  hs-source-dirs: src
+  exposed-modules:
+    Control.Effect
+    Control.Effect.Error
+    Control.Effect.Internal
+    Control.Effect.Reader
+    Control.Effect.State
+
+test-suite eff-tests
+  import: common
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: Main.hs
+  other-modules:
+    Control.Effect.Examples.FileSystemSpec
+
+  build-depends:
+    , eff
+    , hspec >=2 && <3
+  build-tool-depends:
+    , hspec-discover:hspec-discover >=2 && <3

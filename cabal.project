@@ -1,0 +1,12 @@
+packages: eff
+jobs: $ncpus
+
+package *
+  optimization: 2
+
+  haddock-html: true
+  haddock-hoogle: true
+  haddock-hyperlink-source: true
+
+package eff
+  ghc-options: -j
