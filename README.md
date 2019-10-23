@@ -1,4 +1,4 @@
-# `eff` — screaming fast extensible effects for less [![Build Status](https://travis-ci.org/lexi-lambda/eff.svg?branch=master)](https://travis-ci.org/lexi-lambda/eff)
+# `eff` — screaming fast extensible effects for less [![Build Status](https://travis-ci.org/lexi-lambda/eff.svg?branch=master)](https://travis-ci.org/lexi-lambda/eff) [![Documentation](https://img.shields.io/static/v1?label=docs&message=0.0.0.0&color=informational)][docs]
 
 **🚧 This library is currently under construction. 🚧**
 
@@ -82,7 +82,7 @@ runFileSystemPure :: Monad m => EffT FileSystemPureT m a -> m a
 runFileSystemPure = evalState [] . runHandlerT . runEffT
 ```
 
-That’s it. No Template Haskell, no need to define any new monad transformers, and no need to define any lifting instances for each handler. For a thorough explanation of how the above example works, see the `eff` documentation.
+That’s it. No Template Haskell, no need to define any new monad transformers, and no need to define any lifting instances for each handler. For a thorough explanation of how the above example works, [see the `eff` documentation][docs].
 
 ## Implementation status
 
@@ -102,6 +102,7 @@ All code in `eff` is original in the sense that it was not taken directly from o
   - Rob Rix, Patrick Thomson, and other contributors — [`fused-effects`][gh:fused-effects]
   - Sandy Maguire and other contributors — [`polysemy`][gh:polysemy]
 
+[docs]: https://lexi-lambda.github.io/eff/Control-Effect.html
 [gh:fused-effects]: https://github.com/fused-effects/fused-effects
 [gh:polysemy]: https://github.com/polysemy-research/polysemy
 [hackage:mtl]: https://hackage.haskell.org/package/mtl
