@@ -18,7 +18,6 @@ import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Trans.State.Strict (StateT)
 import Data.Kind (Constraint, Type)
 import Data.Proxy
-import Data.Type.Equality (type (==))
 
 import {-# SOURCE #-} Control.Effect.Error
 import {-# SOURCE #-} Control.Effect.Reader
@@ -103,7 +102,7 @@ class InductHandler c tag ts where
          )
        => Proxy ts -> r)
     -> r
-instance c (HandlerT tag ts) => InductHandler c tag '[] where
+instance InductHandler c tag '[] where
   inductHandler a _ = a
   {-# INLINE inductHandler #-}
 instance
@@ -186,6 +185,16 @@ type family Handles (t :: HandlerK) (eff :: EffectK) :: Bool
 type instance Handles (ExceptT e) eff = eff == Error e
 type instance Handles (ReaderT r) eff = eff == Reader r
 type instance Handles (StateT s) eff = eff == State s
+
+-- | Boolean equality on types.
+--
+-- This is essentially the same as @==@ from "Data.Type.Equality", but the version from
+-- "Data.Type.Equality" is written in such a way that allows GHC to deduce more information from
+-- @''True'@ results but causes trouble when trying to compute the equality of rigid type variables.
+-- This definition uses a simpler version.
+type family a == b where
+  a == a = 'True
+  _ == _ = 'False
 
 -- | Checks if @x@ is in the type-level list @xs@ (like 'elem', but at the type level).
 type family Elem (x :: k) (xs :: [k]) :: Bool where

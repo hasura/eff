@@ -88,7 +88,6 @@ module Control.Effect (
   ) where
 
 import Control.Effect.Internal
-import Data.Type.Equality (type (==))
 
 #ifdef __HADDOCK_VERSION__
 import Control.Effect.Reader

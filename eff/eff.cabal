@@ -45,6 +45,7 @@ library
     Control.Effect.Internal
     Control.Effect.Reader
     Control.Effect.State
+    Control.Effect.Writer
 
 test-suite eff-tests
   import: common
