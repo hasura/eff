@@ -4,7 +4,7 @@
 
 `eff` is a work-in-progress implementation of an *extensible effect system* for Haskell, a general-purpose solution for tracking effects at the type level and handling them in flexible ways. Compared to other effect systems currently available, `eff` differentiates itself in the following respects:
 
-  - `eff` is **really fast**. It is designed specifically to cooperate with the GHC specializer to allow effect handlers to be aggressively optimized, even in highly polymorphic code. Performance should be indistinguishable from `mtl`, slightly faster than `fused-effects`, and significantly faster than `freer-simple`, `polysemy`, and other library based on free or free-like constructions.
+  - `eff` is **really fast**. It is designed specifically to cooperate with the GHC specializer to allow effect handlers to be aggressively optimized, even in highly polymorphic code. Performance should be indistinguishable from `mtl`, slightly faster than `fused-effects`, and significantly faster than `freer-simple`, `polysemy`, and other libraries based on free or free-like constructions.
 
     Traditional effect system microbenchmarks fail to capture the performance of real code, as they are so small that GHC often ends up inlining everything. In real programs, GHC compiles most effect-polymorphic via dictionary passing, not specialization, causing the performance of other effect systems to degrade beyond what microbenchmarks would imply. `eff` takes care to allow GHC to generate efficient code without the need for whole-program specialization.
 
