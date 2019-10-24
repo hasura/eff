@@ -3,11 +3,11 @@
 {-|
 
 This library is an implementation of an /extensible effect system/ for Haskell, a general-purpose
-solution for tracking effects at the type level and handling them in various ways. The term “effect”
-as used by this library is very general: it encompasses things most people consider side-effects,
-such as generating random values, interacting with the file system, or mutating state, but it also
-includes globally-pure but locally-impure operations such as access to an immutable global
-environment or exception handling.
+solution for tracking effects at the type level and handling them in flexible ways. The term
+“effect” as used by this library is very general: it encompasses things most people consider
+side-effects, such as generating random values, interacting with the file system, or mutating state,
+but it also includes globally-pure but locally-impure operations such as access to an immutable
+global environment or exception handling.
 
 The traditional approach to effect composition in Haskell is /monad transformers/, but programming
 against a concrete stack of monad transformers can make reuse difficult and tethers a program to a
@@ -122,7 +122,7 @@ function’s type signature. For example, the following function uses 'Reader' t
 @
 printSuffixed :: ('Reader' 'String' m, 'MonadIO' m) => 'String' -> m ()
 printSuffixed suffix = do
-  message <- 'ask' @'String'
+  message <- 'ask'
   'liftIO' '$' 'putStrLn' (message '<>' suffix)
 @
 
@@ -245,9 +245,9 @@ class 'Monad' m => FileSystem m where
 == Defining impure effect handlers
 
 To implement an effectful version of this handler that actually interacts with the real filesystem,
-the implementation can trivially defer to "System.IO".'readFile' and "System.IO".'writeFile', which
-do all the actual work. All that is necessary is to write a small bit of glue code to connect the
-two together.
+the implementation can trivially defer to @"System.IO".'readFile'@ and @"System.IO".'writeFile'@,
+which do all the actual work. All that is necessary is to write a small bit of glue code to connect
+the two together.
 
 To do that, start by defining a new, unique “tag” type that will provide a name for the new handler.
 The actual name of the type is irrelevant, and it does not need to be inhabited; its only purpose is
@@ -263,7 +263,7 @@ Next, define @FileSystemIOT@ as an alias for 'HandlerT' applied to the unique ta
 type FileSystemIOT = 'HandlerT' FileSystemIO '[]
 @
 
-The empty list provided as the second argument to 'HandlerT' is explained in the second below, but
+The empty list provided as the second argument to 'HandlerT' is explained in the section below, but
 it is not relevant just yet. For now, just define an ordinary instance of @FileSystem@ for
 @FileSystemIOT@:
 
@@ -281,10 +281,10 @@ do this, define a new instance of the 'Handles' type family:
 type instance 'Handles' FileSystemIOT eff = eff 'Data.Type.Equality.==' FileSystem
 @
 
-This instance can be read as saying “@FileSystemIOT@ is a handler for some effect @eff@ /if and only
-if/ @eff@ is @FileSystem@.” The precision is important, as @eff@ needs to know for certain that it
-does not handle any /other/ effects so that it can lift them properly. (A handler can, if it wants,
-handle multiple different effects.)
+This instance can be read as saying “@FileSystemIOT@ is a handler for some effect @eff@
+/if and only if/ @eff@ is @FileSystem@.” The precision is important, as @eff@ needs to know for
+certain that it does not handle any /other/ effects so that it can lift them properly. (A handler
+can, if it wants, handle multiple effects.)
 
 With both the @FileSystem@ and 'Handles' instances in place, all that’s left to do is to define a
 @runFileSystemIO@ function that can be used to actually handle the effect:
@@ -365,7 +365,7 @@ than @runFileSystemIO@ because it will discharge the @('State' VirtualFileSystem
 keeping the implementation details of the @FileSystemPure@ handler hidden:
 
 @
-runFileSystemPure :: 'EffT' ('HandlerT' FileSystemPure) m a -> m a
+runFileSystemPure :: 'EffT' FileSystemPureT m a -> m a
 runFileSystemPure = 'evalState' [] '.' 'runHandlerT' '.' 'runEffT'
 @
 

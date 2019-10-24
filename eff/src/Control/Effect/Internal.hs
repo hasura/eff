@@ -89,9 +89,9 @@ instance c (EffsT ts m) => OverEffs c ts m where
 
 -- | An __internal__ helper class used to implement 'MonadTrans' and 'MonadTransControl' instances
 -- for 'HandlerT'. This allows us to avoid making 'HandlerT' a data family by using 'inductHandler'
--- to perform induction over the type-level list of handlers. (We want to avoid making 'HandlerT') a
+-- to perform induction over the type-level list of handlers. (We want to avoid making 'HandlerT' a
 -- data family so that the interface is simpler, as it allows 'runHandlerT' to return an ordinary
--- stack of 'EffT' transformers.
+-- stack of 'EffT' transformers.)
 class InductHandler c tag ts where
   inductHandler
     :: (ts ~ '[] => r)
