@@ -6,15 +6,15 @@ build-type: Simple
 
 author: Alexis King
 maintainer: Alexis King <lexi.lambda@gmail.com>
-homepage: https://github.com/lexi-lambda/eff
-bug-reports: https://github.com/lexi-lambda/eff/issues
+homepage: https://github.com/hasura/eff
+bug-reports: https://github.com/hasura/eff/issues
 
 license: ISC
 copyright: 2019 Hasura, Alexis King
 
 source-repository head
   type: git
-  location: https://github.com/lexi-lambda/eff
+  location: https://github.com/hasura/eff
 
 common common
   ghc-options:
