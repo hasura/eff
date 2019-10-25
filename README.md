@@ -86,7 +86,7 @@ That’s it. No Template Haskell, no need to define any new monad transformers, 
 
 ## Implementation status
 
-`eff` is a work in progress, and many things are not yet implemented. The set of built-in effects currently provided is very small, and some key bits of functionality needed to implement a safe `Resource` effect are still missing. However, all the existing functionality works, and it has been designed to support those extensions, so I do not anticipate any difficulty supporting them.
+`eff` is a work in progress, and many things are not yet implemented. The set of built-in effects currently provided is very small. However, all the existing functionality works, and it has been designed to support those extensions, so I do not anticipate any difficulty supporting them.
 
 This library is also missing a benchmark suite. I have a small set of microbenchmarks I have been using to test out various scenarios and edge cases of different effect libraries, but they need to be cleaned up and added to this repository, and a set of less synthetic benchmarks are also important to assess real-world performance. **If you have a small but non-trivial program where differences in effect system performance are significant, I would be much obliged if you could share it to build a more realistic set of effect system benchmarks.**
 

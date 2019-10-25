@@ -17,7 +17,6 @@ import Control.Monad.Trans.Except (ExceptT)
 import Control.Monad.Trans.Reader (ReaderT)
 import Control.Monad.Trans.State.Strict (StateT)
 import Data.Kind (Constraint, Type)
-import Data.Proxy
 
 import {-# SOURCE #-} Control.Effect.Error
 import {-# SOURCE #-} Control.Effect.Reader
@@ -75,43 +74,6 @@ type family EffsT ts m where
   EffsT '[]       m = m
   EffsT (t ': ts) m = EffT t (EffsT ts m)
 
--- | An __internal__ helper class used to work around GHC’s inability to handle quantified
--- constraints over type families. The constraint @(forall m. c m => 'OverEffs' c ts m)@ is morally
--- equivalent to @(forall m. c m => c (EffsT ts m))@, but the latter is not allowed by GHC. The cost
--- of this less direct encoding is that instances must be manually brought into scope using
--- 'overEffs' and visible type application.
-class OverEffs c ts m where
-  overEffs :: (c (EffsT ts m) => r) -> r
-instance c (EffsT ts m) => OverEffs c ts m where
-  overEffs = id
-  {-# INLINE overEffs #-}
-
--- | An __internal__ helper class used to implement 'MonadTrans' and 'MonadTransControl' instances
--- for 'HandlerT'. This allows us to avoid making 'HandlerT' a data family by using 'inductHandler'
--- to perform induction over the type-level list of handlers. (We want to avoid making 'HandlerT' a
--- data family so that the interface is simpler, as it allows 'runHandlerT' to return an ordinary
--- stack of 'EffT' transformers.)
-class InductHandler c tag ts where
-  inductHandler
-    :: (ts ~ '[] => r)
-    -> (forall t ts'.
-         ( ts ~ (t ': ts')
-         , c t
-         , c (HandlerT tag ts')
-         , forall m. Monad m => OverEffs Monad ts' m
-         )
-       => Proxy ts -> r)
-    -> r
-instance InductHandler c tag '[] where
-  inductHandler a _ = a
-  {-# INLINE inductHandler #-}
-instance
-  ( forall m. Monad m => OverEffs Monad ts m
-  , c t, c (HandlerT tag ts)
-  ) => InductHandler c tag (t ': ts) where
-  inductHandler _ b = b (Proxy @(t ': ts))
-  {-# INLINE inductHandler #-}
-
 -- | A helper for defining effect handlers in terms of other, existing handlers. @('HandlerT' tag
 -- ts)@ is equivalent to @('EffsT' ts)@, but the phantom @tag@ parameter is useful as a way to
 -- disambiguate between different handler instances.
@@ -125,40 +87,61 @@ deriving newtype instance MonadIO (EffsT ts m) => MonadIO (HandlerT tag ts m)
 deriving newtype instance (Monad b, MonadBase b (EffsT ts m)) => MonadBase b (HandlerT tag ts m)
 deriving newtype instance (Monad b, MonadBaseControl b (EffsT ts m)) => MonadBaseControl b (HandlerT tag ts m)
 
-instance InductHandler MonadTrans tag ts => MonadTrans (HandlerT tag ts) where
-  lift :: forall m a. Monad m => m a -> HandlerT tag ts m a
-  lift = inductHandler @MonadTrans @tag @ts HandlerT $
-    \(_ :: Proxy (t ': ts')) -> overEffs @Monad @ts' @m $
-      HandlerT . lift . runHandlerT . lift @(HandlerT tag ts')
-  {-# INLINABLE lift #-}
+class Monad (EffsT ts m) => MonadTransHandler tag ts m where
+  liftHandler :: m a -> HandlerT tag ts m a
+instance Monad m => MonadTransHandler tag '[] m where
+  liftHandler = HandlerT
+  {-# INLINE liftHandler #-}
+instance
+  ( forall n. Monad n => Monad (t n), MonadTrans t, MonadTransHandler tag ts m
+  ) => MonadTransHandler tag (t ': ts) m where
+  liftHandler = HandlerT . lift . runHandlerT . liftHandler @tag @ts
+  {-# INLINABLE liftHandler #-}
 
-type family StEffsT ts a where
-  StEffsT '[]       a = a
-  StEffsT (t ': ts) a = StEffsT ts (StT (EffT t) a)
+instance (forall m. Monad m => MonadTransHandler tag ts m) => MonadTrans (HandlerT tag ts) where
+  lift = liftHandler
+  {-# INLINE lift #-}
+
+class LowerHandler tag t ts m where
+  lowerHandlerWith
+    :: Run (EffT t)
+    -> Run (HandlerT tag ts)
+    -> HandlerT tag (t ': ts) m a -> m (StEffsT (t ': ts) a)
+instance (Monad m, Monad (EffsT ts m)) => LowerHandler tag t ts m where
+  lowerHandlerWith lowerT lowerTs m = lowerTs $ HandlerT $ lowerT $ runHandlerT m
+  {-# INLINABLE lowerHandlerWith #-}
+
+class MonadTransHandler tag ts m => MonadTransControlHandler tag ts m where
+  type StEffsT ts a
+  liftHandlerWith :: (Run (HandlerT tag ts) -> m a) -> HandlerT tag ts m a
+  restoreHandlerT :: m (StEffsT ts a) -> HandlerT tag ts m a
+instance Monad m => MonadTransControlHandler tag '[] m where
+  type StEffsT '[] a = a
+  liftHandlerWith f = HandlerT $ f runHandlerT
+  {-# INLINE liftHandlerWith #-}
+  restoreHandlerT = HandlerT
+  {-# INLINE restoreHandlerT #-}
+instance
+  ( forall n. Monad n => Monad (t n)
+  , MonadTransControl t, MonadTransControlHandler tag ts m
+  , forall n. Monad n => LowerHandler tag t ts n
+  ) => MonadTransControlHandler tag (t ': ts) m where
+  type StEffsT (t ': ts) a = StEffsT ts (StT (EffT t) a)
+  liftHandlerWith f = HandlerT $ liftWith $ \lowerT ->
+    runHandlerT $ liftHandlerWith @tag @ts $ \lowerTs ->
+      f $ lowerHandlerWith @tag @t @ts lowerT lowerTs
+  {-# INLINABLE liftHandlerWith #-}
+  restoreHandlerT m = HandlerT $ restoreT $ runHandlerT $ restoreHandlerT @tag @ts m
+  {-# INLINABLE restoreHandlerT #-}
 
 instance
-  ( MonadTrans (HandlerT tag ts), InductHandler MonadTransControl tag ts
+  ( forall m. Monad m => MonadTransControlHandler tag ts m
   ) => MonadTransControl (HandlerT tag ts) where
   type StT (HandlerT tag ts) a = StEffsT ts a
-
-  liftWith :: forall m a. Monad m => (Run (HandlerT tag ts) -> m a) -> HandlerT tag ts m a
-  liftWith f = inductHandler @MonadTransControl @tag @ts
-    (HandlerT $ f runHandlerT)
-    (\(_ :: Proxy (t ': ts')) -> overEffs @Monad @ts' @m $
-      HandlerT $ liftWith $ \lowerT ->
-        runHandlerT $ liftWith @(HandlerT tag ts') @m $ \lowerTs ->
-          let lower :: forall n b. Monad n => HandlerT tag ts n b -> n (StEffsT ts' (StT t b))
-              lower m = overEffs @Monad @ts' @n $
-                lowerTs $ HandlerT $ lowerT $ runHandlerT m
-          in f lower)
-  {-# INLINABLE liftWith #-}
-
-  restoreT :: forall m a. Monad m => m (StEffsT ts a) -> HandlerT tag ts m a
-  restoreT m = inductHandler @MonadTransControl @tag @ts
-    (HandlerT m)
-    (\(_ :: Proxy (t ': ts')) -> overEffs @Monad @ts' @m $
-      HandlerT $ restoreT $ runHandlerT $ restoreT @(HandlerT tag ts') m)
-  {-# INLINABLE restoreT #-}
+  liftWith = liftHandlerWith
+  {-# INLINE liftWith #-}
+  restoreT = restoreHandlerT
+  {-# INLINE restoreT #-}
 
 -- | An open type family that is used to determine which effects ought to be handled by which
 -- handlers. If @'Handles' t eff@ ~ ''True' for some handler @t@ and effect @eff@, the handler will

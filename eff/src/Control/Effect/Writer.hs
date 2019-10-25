@@ -36,7 +36,7 @@ class (Monoid w, Monad m) => Writer w m where
   -- | Executes the given action and modifies its output by applying the given function.
   censor :: (w -> w) -> m a -> m a
 
-instance (Monoid w, Monad (ts m), Send (Writer w) ts m) => Writer w (EffT ts m) where
+instance (Monoid w, Monad (t m), Send (Writer w) t m) => Writer w (EffT t m) where
   tell w = send @(Writer w) (tell w)
   {-# INLINE tell #-}
   listen m = sendWith @(Writer w)
