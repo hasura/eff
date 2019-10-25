@@ -93,51 +93,50 @@ instance (Monad (t m), Send Mask t m) => Mask (EffT t m) where
 -- that any handlers defined using 'HandlerT' do /not/ need their own 'MonadUnwind' instances, as
 -- they will inherit the instance of their underlying handlers.
 class Monad m => MonadUnwind m where
-  -- | @(/a/ `'onException'` /b/)@ runs @/a/@. If and only if it fails with an error, @/b/@ is
+  -- | @(/a/ `'onError'` /b/)@ runs @/a/@. If and only if it fails with an error, @/b/@ is
   -- executed for side effects (with asynchronous exceptions masked, if relevant), after which the
   -- error is re-raised. If @/b/@ fails with an error, its error takes priority over the error
   -- raised by @/a/@.
   --
-  -- 'onException' /cannot/ generally be used to ensure the disposal of an acquired resource because
-  -- an asynchronous exception might be raised after the resource is acquired but before the
-  -- exception handler is installed. For safe resource management, use 'bracket' or
-  -- 'bracketOnError_' instead.
+  -- 'onError' /cannot/ generally be used to ensure the disposal of an acquired resource because an
+  -- asynchronous exception might be raised after the resource is acquired but before the exception
+  -- handler is installed. For safe resource management, use 'bracket' or 'bracketOnError_' instead.
   --
   -- Note that because the error is re-raised after @/b/@ is executed, changes to the monadic state
   -- made by @/b/@ will be discarded for any effects handled more locally than the effect that
   -- triggered the failure.
-  onException :: m a -> m b -> m a
+  onError :: m a -> m b -> m a
 
 instance MonadUnwind Identity where
-  onException a _ = a
-  {-# INLINE onException #-}
+  onError a _ = a
+  {-# INLINE onError #-}
 
 instance MonadUnwind IO where
-  onException = IO.onException
-  {-# INLINE onException #-}
+  onError = IO.onException
+  {-# INLINE onError #-}
 
 deriving newtype instance MonadUnwind (t m) => MonadUnwind (EffT t m)
 deriving newtype instance MonadUnwind (EffsT ts m) => MonadUnwind (HandlerT tag ts m)
 
-onExceptionTotal :: (Handler t, MonadUnwind m) => t m a -> t m b -> t m a
-onExceptionTotal action cleanup = liftWith $ \lower -> onException (lower action) (lower cleanup)
-{-# INLINABLE onExceptionTotal #-}
+onErrorTotal :: (Handler t, MonadUnwind m) => t m a -> t m b -> t m a
+onErrorTotal action cleanup = liftWith $ \lower -> onError (lower action) (lower cleanup)
+{-# INLINABLE onErrorTotal #-}
 
 instance MonadUnwind m => MonadUnwind (ReaderT r m) where
-  onException = onExceptionTotal
-  {-# INLINE onException #-}
+  onError = onErrorTotal
+  {-# INLINE onError #-}
 instance MonadUnwind m => MonadUnwind (StateT r m) where
-  onException = onExceptionTotal
-  {-# INLINE onException #-}
+  onError = onErrorTotal
+  {-# INLINE onError #-}
 
 instance MonadUnwind m => MonadUnwind (ExceptT e m) where
-  onException action cleanup =
-    ExceptT $ onException (runExceptT action) (runExceptT cleanup) >>= \case
+  onError action cleanup =
+    ExceptT $ onError (runExceptT action) (runExceptT cleanup) >>= \case
       -- note: need to take care to ensure an error produced by the cleanup action takes priority
       -- over the error produced by the primary action
       Left e -> runExceptT (cleanup *> Trans.throwE e)
       Right x -> pure (Right x)
-  {-# INLINABLE onException #-}
+  {-# INLINABLE onError #-}
 
 -- | @('Resource' m)@ is a constraint synonym for @('Mask' m, 'MonadUnwind' m)@, which together
 -- provide the operations necessary for safe resource allocation and disposal. The most frequently
@@ -145,11 +144,11 @@ instance MonadUnwind m => MonadUnwind (ExceptT e m) where
 class (Mask m, MonadUnwind m) => Resource m
 instance (Mask m, MonadUnwind m) => Resource m
 
--- | Like 'onException', but the action provided for the second argument is unconditionally
+-- | Like 'onError', but the action provided for the second argument is unconditionally
 -- executed, whether an error was raised or not.
 finally :: Resource m => m a -> m b -> m a
 finally action cleanup = mask $ \restore ->
-  (restore action `onException` cleanup) <* cleanup
+  (restore action `onError` cleanup) <* cleanup
 {-# INLINABLE finally #-}
 
 -- | Safely acquires a resource for the dynamic extent of a nested computation given actions to
@@ -162,7 +161,7 @@ bracket
   -> m b
 bracket acquire release use = mask $ \restore -> do
   a <- acquire
-  (restore (use a) `onException` release a) <* release a
+  (restore (use a) `onError` release a) <* release a
 {-# INLINABLE bracket #-}
 
 -- | Like 'bracket', but the return value from the first argument is ignored.
@@ -180,7 +179,7 @@ bracketOnError
   -> m b
 bracketOnError acquire release use = mask $ \restore -> do
   a <- acquire
-  restore (use a) `onException` release a
+  restore (use a) `onError` release a
 {-# INLINABLE bracketOnError #-}
 
 -- | Like 'bracketOnError', but the return value from the first argument is ignored.
