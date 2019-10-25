@@ -14,6 +14,7 @@ module Control.Effect.Error
 import qualified Control.Monad.Trans.Except as Trans
 
 import Control.Effect.Internal
+import Control.Handler.Internal
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 
 -- | @'Error' e@ is an effect that allows throwing and catching errors of type @e@. Note that these
@@ -33,7 +34,7 @@ instance (Monad (t m), Send (Error e) t m) => Error e (EffT t m) where
   {-# INLINE throw #-}
   catch m f = sendWith @(Error e)
     (catch (runEffT m) (runEffT . f))
-    (controlT $ \run -> catch (run $ runEffT m) (run . runEffT . f))
+    (liftWith $ \run -> catch (run $ runEffT m) (run . runEffT . f))
   {-# INLINABLE catch #-}
 
 instance Monad m => Error e (ExceptT e m) where

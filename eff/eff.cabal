@@ -23,7 +23,6 @@ common common
 
   build-depends:
     , base >=4.12 && <5
-    , monad-control ^>=1
     , transformers <1
     , transformers-base <1
 
@@ -48,6 +47,7 @@ library
     Control.Effect.Resource
     Control.Effect.State
     Control.Effect.Writer
+    Control.Handler.Internal
 
 test-suite eff-tests
   import: common

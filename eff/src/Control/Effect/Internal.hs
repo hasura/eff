@@ -7,30 +7,22 @@
 
 module Control.Effect.Internal where
 
-import Control.Applicative
-import Control.Monad
+import Control.Applicative (Alternative(..))
+import Control.Monad (MonadPlus(..))
 import Control.Monad.Base (MonadBase(..))
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Trans.Class (MonadTrans(..))
-import Control.Monad.Trans.Control
-import Control.Monad.Trans.Except (ExceptT)
-import Control.Monad.Trans.Reader (ReaderT)
-import Control.Monad.Trans.State.Strict (StateT)
 import Data.Kind (Constraint, Type)
 
-import {-# SOURCE #-} Control.Effect.Error
-import {-# SOURCE #-} Control.Effect.Reader
-import {-# SOURCE #-} Control.Effect.State
+import {-# SOURCE #-} Control.Handler.Internal
 
--- | The kind of effect handlers, which are monad transformers.
-type HandlerK = (Type -> Type) -> Type -> Type
 -- | The kind of effects, which are classes of monads.
 type EffectK = (Type -> Type) -> Constraint
 
 -- | A monad transformer for handling effects. @('EffT' t)@ is actually no different from @t@ at
 -- runtime, but it provides a different set of instances. Wrapping a monad transformer with 'EffT'
 -- allows other effects to be automatically lifted through it, provided the underlying transformer
--- provides a 'MonadTransControl' instance.
+-- provides a 'Handler' instance.
 --
 -- 'EffT' cannot be used with any arbitrary monad transformer: all monad transformers wrapped with
 -- 'EffT' /must/ provide an instance of the 'Handles' type family to cooperate with effect with the
@@ -39,14 +31,14 @@ type EffectK = (Type -> Type) -> Constraint
 -- restrictions placed on the underlying monad (though effects will not be able to be automatically
 -- lifted through non-'EffT' layers).
 newtype EffT (t :: HandlerK) m a = EffT { runEffT :: t m a }
-  deriving newtype (Functor, Applicative, Monad, MonadTrans, MonadTransControl)
+  deriving newtype (Functor, Applicative, Monad, MonadTrans, Handler)
 
 instance (Send Alternative t m, Monad (t m)) => Alternative (EffT t m) where
   empty = send @Alternative empty
   {-# INLINE empty #-}
   a <|> b = sendWith @Alternative
     (runEffT a <|> runEffT b)
-    (controlT $ \lower -> lower (runEffT a) <|> lower (runEffT b))
+    (liftWith $ \lower -> lower (runEffT a) <|> lower (runEffT b))
   {-# INLINABLE (<|>) #-}
 
 instance (Send Alternative t m, Monad (t m)) => MonadPlus (EffT t m)
@@ -59,13 +51,6 @@ instance (MonadBase b m, MonadTrans t, Monad (t m)) => MonadBase b (EffT t m) wh
   liftBase = lift . liftBase
   {-# INLINE liftBase #-}
 
-instance (MonadBaseControl b m, MonadTransControl t, Monad (t m)) => MonadBaseControl b (EffT t m) where
-  type StM (EffT t m) a = ComposeSt (EffT t) m a
-  liftBaseWith = defaultLiftBaseWith
-  {-# INLINE liftBaseWith #-}
-  restoreM = defaultRestoreM
-  {-# INLINE restoreM #-}
-
 -- | A type alias for a stack of nested 'EffT' transformers: @'EffsT' '[t1, t2, ..., tn] m@ is
 -- equivalent to @'EffT' t1 ('EffT' t2 (... ('EffT' tn m) ...))@.
 --
@@ -74,128 +59,17 @@ type family EffsT ts m where
   EffsT '[]       m = m
   EffsT (t ': ts) m = EffT t (EffsT ts m)
 
--- | A helper for defining effect handlers in terms of other, existing handlers. @('HandlerT' tag
--- ts)@ is equivalent to @('EffsT' ts)@, but the phantom @tag@ parameter is useful as a way to
--- disambiguate between different handler instances.
-newtype HandlerT tag ts m a = HandlerT { runHandlerT :: EffsT ts m a }
-deriving newtype instance Functor (EffsT ts m) => Functor (HandlerT tag ts m)
-deriving newtype instance Applicative (EffsT ts m) => Applicative (HandlerT tag ts m)
-deriving newtype instance Alternative (EffsT ts m) => Alternative (HandlerT tag ts m)
-deriving newtype instance Monad (EffsT ts m) => Monad (HandlerT tag ts m)
-deriving newtype instance MonadPlus (EffsT ts m) => MonadPlus (HandlerT tag ts m)
-deriving newtype instance MonadIO (EffsT ts m) => MonadIO (HandlerT tag ts m)
-deriving newtype instance (Monad b, MonadBase b (EffsT ts m)) => MonadBase b (HandlerT tag ts m)
-deriving newtype instance (Monad b, MonadBaseControl b (EffsT ts m)) => MonadBaseControl b (HandlerT tag ts m)
-
-class Monad (EffsT ts m) => MonadTransHandler tag ts m where
-  liftHandler :: m a -> HandlerT tag ts m a
-instance Monad m => MonadTransHandler tag '[] m where
-  liftHandler = HandlerT
-  {-# INLINE liftHandler #-}
-instance
-  ( forall n. Monad n => Monad (t n), MonadTrans t, MonadTransHandler tag ts m
-  ) => MonadTransHandler tag (t ': ts) m where
-  liftHandler = HandlerT . lift . runHandlerT . liftHandler @tag @ts
-  {-# INLINABLE liftHandler #-}
-
-instance (forall m. Monad m => MonadTransHandler tag ts m) => MonadTrans (HandlerT tag ts) where
-  lift = liftHandler
-  {-# INLINE lift #-}
-
-class LowerHandler tag t ts m where
-  lowerHandlerWith
-    :: Run (EffT t)
-    -> Run (HandlerT tag ts)
-    -> HandlerT tag (t ': ts) m a -> m (StEffsT (t ': ts) a)
-instance (Monad m, Monad (EffsT ts m)) => LowerHandler tag t ts m where
-  lowerHandlerWith lowerT lowerTs m = lowerTs $ HandlerT $ lowerT $ runHandlerT m
-  {-# INLINABLE lowerHandlerWith #-}
-
-class MonadTransHandler tag ts m => MonadTransControlHandler tag ts m where
-  type StEffsT ts a
-  liftHandlerWith :: (Run (HandlerT tag ts) -> m a) -> HandlerT tag ts m a
-  restoreHandlerT :: m (StEffsT ts a) -> HandlerT tag ts m a
-instance Monad m => MonadTransControlHandler tag '[] m where
-  type StEffsT '[] a = a
-  liftHandlerWith f = HandlerT $ f runHandlerT
-  {-# INLINE liftHandlerWith #-}
-  restoreHandlerT = HandlerT
-  {-# INLINE restoreHandlerT #-}
-instance
-  ( forall n. Monad n => Monad (t n)
-  , MonadTransControl t, MonadTransControlHandler tag ts m
-  , forall n. Monad n => LowerHandler tag t ts n
-  ) => MonadTransControlHandler tag (t ': ts) m where
-  type StEffsT (t ': ts) a = StEffsT ts (StT (EffT t) a)
-  liftHandlerWith f = HandlerT $ liftWith $ \lowerT ->
-    runHandlerT $ liftHandlerWith @tag @ts $ \lowerTs ->
-      f $ lowerHandlerWith @tag @t @ts lowerT lowerTs
-  {-# INLINABLE liftHandlerWith #-}
-  restoreHandlerT m = HandlerT $ restoreT $ runHandlerT $ restoreHandlerT @tag @ts m
-  {-# INLINABLE restoreHandlerT #-}
-
-instance
-  ( forall m. Monad m => MonadTransControlHandler tag ts m
-  ) => MonadTransControl (HandlerT tag ts) where
-  type StT (HandlerT tag ts) a = StEffsT ts a
-  liftWith = liftHandlerWith
-  {-# INLINE liftWith #-}
-  restoreT = restoreHandlerT
-  {-# INLINE restoreT #-}
-
--- | An open type family that is used to determine which effects ought to be handled by which
--- handlers. If @'Handles' t eff@ ~ ''True' for some handler @t@ and effect @eff@, the handler will
--- be used to handle any effects sent to it via 'send'; otherwise, the effect will be lifted to the
--- next handler in the stack.
---
--- It is important that @'Handles' t@ is total in its argument; that is, it is important that
--- effects that /cannot/ be handled produce @''False'@, not just that effects that can be handled
--- produce @''True'@. The 'Data.Type.Equality.==' type family is provided for this purpose: If a
--- handler only handles a single effect, its 'Handles' instance should look like the following:
---
--- @
--- type 'Handles' MyEffectT eff = eff 'Data.Type.Equality.==' MyEffect
--- @
---
--- If it handles multiple effects, it can use the 'Elem' type family instead:
---
--- @
--- type 'Handles' MyEffectT eff = eff `'Elem'` '[MyEffect1, MyEffect2]
--- @
---
--- More complex 'Handles' instances are possible, but not generally very useful.
-type family Handles (t :: HandlerK) (eff :: EffectK) :: Bool
-type instance Handles (ExceptT e) eff = eff == Error e
-type instance Handles (ReaderT r) eff = eff == Reader r
-type instance Handles (StateT s) eff = eff == State s
-
--- | Boolean equality on types.
---
--- This is essentially the same as @==@ from "Data.Type.Equality", but the version from
--- "Data.Type.Equality" is written in such a way that allows GHC to deduce more information from
--- @''True'@ results but causes trouble when trying to compute the equality of rigid type variables.
--- This definition uses a simpler version.
-type family a == b where
-  a == a = 'True
-  _ == _ = 'False
-
--- | Checks if @x@ is in the type-level list @xs@ (like 'elem', but at the type level).
-type family Elem (x :: k) (xs :: [k]) :: Bool where
-  Elem _ '[]       = 'False
-  Elem x (x ': _)  = 'True
-  Elem x (_ ': xs) = Elem x xs
-
 class Handle (handles :: Bool) eff t m where
   handle
     :: (eff (t m) => t m a)
-    -> ((MonadTransControl t, eff m) => t m a)
+    -> ((Handler t, eff m) => t m a)
     -> EffT t m a
 
 instance eff (t m) => Handle 'True eff t m where
   handle m _ = EffT m
   {-# INLINE handle #-}
 
-instance (MonadTransControl t, eff m) => Handle 'False eff t m where
+instance (Handler t, eff m) => Handle 'False eff t m where
   handle _ m = EffT m
   {-# INLINE handle #-}
 
@@ -237,7 +111,7 @@ class (Monad m, Handle (Handles t eff) eff t m) => Send eff t m where
   --      instance of @eff@.
   --
   --   2. A “lift” action, which lifts the effect through @(t m)@ into @m@ given that @t@ has a
-  --      'MonadTransControl' instance and @m@ has an instance of @eff@.
+  --      'Handler' instance and @m@ has an instance of @eff@.
   --
   -- Each higher-order method in the 'EffT' instance for a given effect should use 'sendWith' to
   -- specify how it ought to be lifted through effect handlers. For example, the definition of
@@ -246,33 +120,24 @@ class (Monad m, Handle (Handles t eff) eff t m) => Send eff t m where
   -- @
   -- 'Control.Effect.Reader.local' f m = 'sendWith' @('Control.Effect.Reader.Reader' r)
   --   ('Control.Effect.Reader.local' f ('runEffT' m))
-  --   ('controlT' '$' \\lower -> 'Control.Effect.Reader.local' f (lower '$' 'runEffT' m))
+  --   ('liftWith' '$' \\lower -> 'Control.Effect.Reader.local' f (lower '$' 'runEffT' m))
   -- @
   --
-  -- With this instance in place, @'Reader' r@ can automatically be used with @'EffT' t m a@.
-  -- Transformers that can handle the @'Reader' r@ effect (i.e. ones for which
-  -- @'Handles' t ('Reader' r) ~ ''True'@) will use their @'Reader' r@ instances, while other
-  -- transformers will delegate to the underlying monad.
+  -- With this instance in place, @'Control.Effect.Reader.Reader' r@ can automatically be used with
+  -- @'EffT' t m a@. Transformers that can handle the @'Control.Effect.Reader.Reader' r@ effect
+  -- (i.e. ones for which @'Handles' t ('Control.Effect.Reader.Reader' r) ~ ''True'@) will use their
+  -- @'Control.Effect.Reader.Reader' r@ instances, while other transformers will delegate to the
+  -- underlying monad.
   sendWith
     :: (eff (t m) => t m a)
     -- ^ An action to run in the current handler.
-    -> ((MonadTransControl t, eff m) => t m a)
+    -> ((Handler t, eff m) => t m a)
     -- ^ An action that delegates to the underlying monad.
     -> EffT t m a
 
 instance (Monad m, Handle (Handles t eff) eff t m) => Send eff t m where
   sendWith = handle @(Handles t eff) @eff
   {-# INLINE sendWith #-}
-
--- | Using 'MonadTransControl', lifts a higher-order effectful operation into the underlying monad.
--- It is named by analogy to 'control', since both are intended for lifting “control operations,”
--- i.e. operations that affect control flow.
---
--- @'controlT' f@ is equivalent to @'restoreT' '.' 'pure' =<< 'liftWith' f@, but it is rare that
--- 'restoreT' or 'liftWith' need to be used directly.
-controlT :: (MonadTransControl t, Monad m, Monad (t m)) => (Run t -> m (StT t a)) -> t m a
-controlT f = restoreT . pure =<< liftWith f
-{-# INLINE controlT #-}
 
 type family All (cs :: [k -> Constraint]) (a :: k) :: Constraint where
   All '[]       _ = ()

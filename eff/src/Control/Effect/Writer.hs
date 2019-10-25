@@ -18,8 +18,9 @@ module Control.Effect.Writer
 
 import Control.Effect.Internal
 import Control.Effect.State
+import Control.Handler.Internal
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.Control
+import Data.Functor
 
 -- | @'Writer' w@ is an effect that allows the accumulation of monoidal values of type @w@.
 --
@@ -41,19 +42,18 @@ instance (Monoid w, Monad (t m), Send (Writer w) t m) => Writer w (EffT t m) whe
   {-# INLINE tell #-}
   listen m = sendWith @(Writer w)
     (listen (runEffT m))
-    (do (w, sa) <- liftWith $ \lower -> listen (lower $ runEffT m)
-        (w,) <$> restoreT (pure sa))
+    (liftWith $ \lower -> listen (lower $ runEffT m) <&> \(w, s) -> (w,) <$> s)
   {-# INLINABLE listen #-}
   censor f m = sendWith @(Writer w)
     (censor f (runEffT m))
-    (controlT $ \lower -> censor f (lower $ runEffT m))
+    (liftWith $ \lower -> censor f (lower $ runEffT m))
   {-# INLINABLE censor #-}
 
 data WriterH
 -- | This handler is implemented on top of 'StateT' rather than using a @WriterT@ implementation
 -- from @transformers@ because both the strict and lazy @WriterT@ transformers leak space, and
 -- @"Control.Monad.Trans.Writer.CPS"@ does not expose the @WriterT@ constructor, precluding an
--- efficient implementation of 'MonadTransControl'.
+-- efficient implementation of 'Handler'.
 type WriterT w = HandlerT WriterH '[StateT w]
 type instance Handles (WriterT w) eff = eff == Writer w
 

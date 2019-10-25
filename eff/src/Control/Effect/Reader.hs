@@ -10,6 +10,7 @@ module Control.Effect.Reader
 import qualified Control.Monad.Trans.Reader as Trans
 
 import Control.Effect.Internal
+import Control.Handler.Internal
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
 
 -- | @'Reader' r@ is an effect that provides access to a global environment of type @r@.
@@ -38,7 +39,7 @@ instance (Monad (t m), Send (Reader r) t m) => Reader r (EffT t m) where
   {-# INLINE asks #-}
   local f m = sendWith @(Reader r)
     (local f (runEffT m))
-    (controlT $ \run -> local f (run $ runEffT m))
+    (liftWith $ \lower -> local f (lower $ runEffT m))
   {-# INLINABLE local #-}
 
 instance Monad m => Reader r (ReaderT r m) where

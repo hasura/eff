@@ -22,10 +22,10 @@ import qualified Control.Monad.Trans.Except as Trans
 
 import Control.Effect.Internal
 import Control.Effect.State
-import Data.Functor.Identity
-import Control.Monad.Trans.Control
+import Control.Handler.Internal
 import Control.Monad.Trans.Except (ExceptT(..), runExceptT)
 import Control.Monad.Trans.Reader (ReaderT)
+import Data.Functor.Identity
 
 -- | An effect that provides the ability to temporarily mask asynchronous interrupts.
 --
@@ -68,15 +68,15 @@ instance Mask IO where
   {-# INLINE uninterruptibleMask #-}
 
 sendMask
-  :: (Monad (t m), Send Mask t m)
+  :: Send Mask t m
   => (forall n c. Mask n => ((forall a. n a -> n a) -> n c) -> n c)
   -> ((forall a. EffT t m a -> EffT t m a) -> EffT t m b) -> EffT t m b
 sendMask mask' f = sendWith @Mask
   (mask' $ \restore -> runEffT $ f $ \m ->
     EffT $ restore $ runEffT m)
-  (controlT $ \lowerOuter -> mask' $ \restore ->
+  (liftWith $ \lowerOuter -> mask' $ \restore ->
     lowerOuter $ runEffT $ f $ \m ->
-      controlT $ \lowerInner ->
+      liftWith $ \lowerInner ->
         restore $ lowerInner m)
 {-# INLINABLE sendMask #-}
 
@@ -119,8 +119,8 @@ instance MonadUnwind IO where
 deriving newtype instance MonadUnwind (t m) => MonadUnwind (EffT t m)
 deriving newtype instance MonadUnwind (EffsT ts m) => MonadUnwind (HandlerT tag ts m)
 
-onExceptionTotal :: (MonadTransControl t, MonadUnwind m, Monad (t m)) => t m a -> t m b -> t m a
-onExceptionTotal action cleanup = controlT $ \lower -> onException (lower action) (lower cleanup)
+onExceptionTotal :: (Handler t, MonadUnwind m) => t m a -> t m b -> t m a
+onExceptionTotal action cleanup = liftWith $ \lower -> onException (lower action) (lower cleanup)
 {-# INLINABLE onExceptionTotal #-}
 
 instance MonadUnwind m => MonadUnwind (ReaderT r m) where
