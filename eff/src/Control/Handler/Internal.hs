@@ -1,5 +1,6 @@
 {-# OPTIONS_HADDOCK not-home #-}
 
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -17,12 +18,10 @@ import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.Identity
-import Control.Monad.Trans.Reader (ReaderT(..), runReaderT)
-import Data.Bifunctor
-import Data.Coerce
+import Control.Monad.Trans.Reader (ReaderT(..), mapReaderT, runReaderT)
 import Data.Functor.Compose
-import Data.Functor.Identity
-import Data.Kind (Type)
+import Data.Kind (Constraint, Type)
+import Data.Proxy
 
 import {-# SOURCE #-} Control.Effect.Error
 import {-# SOURCE #-} Control.Effect.Reader
@@ -32,127 +31,98 @@ import Control.Effect.Internal
 
 -- | The kind of effect handlers, which are monad transformers.
 type HandlerK = (Type -> Type) -> Type -> Type
+-- | The kind of lifting tactics, which are classes on monad transformers.
+type TacticK = HandlerK -> Constraint
 
 -- | The class of effect handlers. You do not need to implement any instances of this class yourself
 -- if you define your effect handlers in terms of existing handlers using 'HandlerT'. However, if
 -- you want to implement your own “primitive” handlers, you must define an instance of this class.
-class (MonadTrans t, forall m. Monad m => Monad (t m), Functor (HandlerState t)) => Handler t where
-  -- | The monadic state maintained by a single handler, represented as a functor.
-  type HandlerState t :: Type -> Type
+class (MonadTrans t, forall m. Functor m => Functor (t m), forall m. Monad m => Monad (t m)) => Handler t where
+  hmap :: (Functor m, Functor n) => (forall b. m b -> n b) -> t m a -> t n a
 
-  -- | Lifts a higher-order action from the base monad into the transformed monad.
-  --
-  -- 'liftWith' is like 'lift', but with the additional capability to “lower” certain effects from
-  -- the handler monad into the base monad. Unlike 'lift', this lowering process cannot occur in a
-  -- vacuum—an action of type @t m a@ cannot be arbitrarily converted into an action of type
-  -- @m a@—as the handler may add some additional state on top of the base monad that cannot be
-  -- produced from thin air. For a concrete example, consider the 'StateT' handler: it is not
-  -- possible to write a function of type @'StateT' s m a -> a@ because somehow an initial state
-  -- must be provided. Therefore, 'liftWith' constrains this lowering process in two ways:
-  --
-  --   1. A lowering function can only be obtained via 'liftWith', which requires already being in
-  --      the handler’s monadic context.
-  --
-  --   2. Furthermore, the lowering function does not produce an action of type @m a@, but rather an
-  --      action of type @m ('HandlerState' t a)@. The @'HandlerState' t@ functor encapsulates the
-  --      additional state produced by the lowered computation so that it is not lost when the call
-  --      to 'liftWith' returns.
-  --
-  -- To put things another way, each call to 'liftWith' effectively captures the
-  -- current monadic state, embedding it inside the closure of the lowering function, and each use
-  -- of the lowering function executes a computation using that state. The state is threaded through
-  -- the resulting action to produce a combination of both the new state and the resulting value,
-  -- which are packaged together in the @'HandlerState' t@ functor.
-  --
-  -- These restrictions mean that not all higher order actions can be lifted using 'liftWith'.
-  -- For example, consider the following two operations:
-  --
-  -- @
-  -- foo :: m a -> m a
-  -- bar :: m 'Int' -> m ()
-  -- @
-  --
-  -- These look remarkably similar, but the polymorphism of @foo@ makes all the difference.
-  -- Implementing a lifted version of @foo@ is straightforward:
-  --
-  -- @
-  -- foo' :: t m a -> t m a
-  -- foo' m = 'liftWith' '$' \\lower -> foo (lower m)
-  -- @
-  --
-  -- However, the same approach with 'bar' fails: applying @lower@ to the input action of type @t m
-  -- Int@ produces a new action of type @m ('HandlerState' t 'Int')@, which cannot be provided to
-  -- @bar@, as @bar@ wants an action of exactly @m 'Int'@. This is a fundamental restriction, as an
-  -- action of type @t m 'Int'@ might not actually produce an 'Int' at all: it might fail with an
-  -- error! An operation with a type like the one @bar@ has simply cannot allow arbitrary effects.
-  --
-  -- This limitation is a good thing, as it prevents many misuses of 'liftWith', but unfortunately
-  -- it cannot prevent all of them. Consider a third operation:
-  --
-  -- @
-  -- baz :: m a -> m ()
-  -- @
-  --
-  -- At first blush, this operation cannot be lifted either, as @baz (lower m)@ will produce an
-  -- action of type @m ()@, but 'liftWith' demands an action of type @m ('HandlerState' t ())@.
-  -- However, it is technically possible to get the latter from the former by using 'lift' on the
-  -- result followed immediately by @lower@. Although this typechecks, it does not do the right
-  -- thing! The state changes made by the input action will be discarded, as @lower@ simply resumes
-  -- using the original state.
-  --
-  -- The fact that such uses are permitted by 'liftWith' is a flaw in its type, but it is not clear
-  -- how to prevent them without linear types. If you have an alternate formulation of 'liftWith'
-  -- that does not suffer from this problem, please let the author of this library know! In the
-  -- meantime, 'liftWith' must be used with some care.
-  --
-  -- Instances of 'Handler' should obey the following laws:
-  --
-  --   * @'liftWith' ('const' /m/)@ ≡ @'lift' /m/@
-  --   * @'liftWith' ('$' 'lift' /m/)@ ≡ @'lift' /m/@
-  liftWith
-    :: Monad m
-    => ((forall r. t m r -> m (HandlerState t r)) -> m (HandlerState t a))
-    -> t m a
+class Handler t => Accumulate t where
+  {-# MINIMAL accumulate | hmapS #-}
+
+  accumulate :: Functor m => t (Compose m ((,) s)) a -> t m (s, a)
+  accumulate = hmapS getCompose
+  {-# INLINE accumulate #-}
+
+  hmapS :: (Functor m, Functor n) => (forall b. m b -> n (s, b)) -> t m a -> t n (s, a)
+  hmapS f = accumulate . hmap (Compose . f)
+  {-# INLINABLE hmapS #-}
+
+class Handler t => Choice t where
+  choice :: (Functor m, Functor n) => (forall b. (t m a -> m b) -> n b) -> t n a
 
 instance Handler IdentityT where
-  type HandlerState IdentityT = Identity
-  liftWith f = IdentityT (runIdentity <$> f (\m -> Identity <$> runIdentityT m))
-  {-# INLINABLE liftWith #-}
+  hmap = mapIdentityT
+  {-# INLINE hmap #-}
+instance Accumulate IdentityT where
+  hmapS = mapIdentityT
+  {-# INLINE hmapS #-}
+instance Choice IdentityT where
+  choice f = IdentityT (f runIdentityT)
+  {-# INLINE choice #-}
 
 instance Handler (ReaderT r) where
-  type HandlerState (ReaderT r) = Identity
-  liftWith f = ReaderT $ \r -> runIdentity <$> f (\m -> Identity <$> runReaderT m r)
-  {-# INLINABLE liftWith #-}
+  hmap = mapReaderT
+  {-# INLINE hmap #-}
+instance Accumulate (ReaderT r) where
+  hmapS = mapReaderT
+  {-# INLINE hmapS #-}
+instance Choice (ReaderT r) where
+  choice f = ReaderT $ \r -> f (flip runReaderT r)
+  {-# INLINABLE choice #-}
 
 instance Handler (ExceptT e) where
-  type HandlerState (ExceptT e) = Either e
-  liftWith f = coerce (f coerce)
-  {-# INLINE liftWith #-}
-
-newtype Flip p a b = Flip { unFlip :: p b a }
-instance Bifunctor p => Functor (Flip p a) where
-  fmap f = Flip . first f . unFlip
-  {-# INLINE fmap #-}
+  hmap = mapExceptT
+  {-# INLINE hmap #-}
+instance Accumulate (ExceptT e) where
+  hmapS f = mapExceptT (fmap sequence . f)
+  {-# INLINABLE hmapS #-}
+instance Choice (ExceptT e) where
+  choice f = ExceptT $ f runExceptT
+  {-# INLINE choice #-}
 
 instance Handler (Lazy.StateT s) where
-  type HandlerState (Lazy.StateT s) = Flip (,) s
-  liftWith f = Lazy.StateT $ \s -> unFlip <$> f (\m -> Flip <$> Lazy.runStateT m s)
-  {-# INLINABLE liftWith #-}
+  hmap = Lazy.mapStateT
+  {-# INLINE hmap #-}
+instance Accumulate (Lazy.StateT s) where
+  hmapS f = Lazy.mapStateT (fmap (\(s, (a, t)) -> ((s, a), t)) . f)
+  {-# INLINABLE hmapS #-}
+instance Choice (Lazy.StateT s) where
+  choice f = Lazy.StateT $ \s -> f (flip Lazy.runStateT s)
+  {-# INLINABLE choice #-}
 
 instance Handler (Strict.StateT s) where
-  type HandlerState (Strict.StateT s) = Flip (,) s
-  liftWith f = Strict.StateT $ \s -> unFlip <$> f (\m -> Flip <$> Strict.runStateT m s)
-  {-# INLINABLE liftWith #-}
+  hmap = Strict.mapStateT
+  {-# INLINE hmap #-}
+instance Accumulate (Strict.StateT s) where
+  hmapS f = Strict.mapStateT (fmap (\(s, (a, t)) -> ((s, a), t)) . f)
+  {-# INLINABLE hmapS #-}
+instance Choice (Strict.StateT s) where
+  choice f = Strict.StateT $ \s -> f (flip Strict.runStateT s)
+  {-# INLINABLE choice #-}
 
 instance Monoid w => Handler (Lazy.WriterT w) where
-  type HandlerState (Lazy.WriterT w) = Flip (,) w
-  liftWith f = Lazy.WriterT $ unFlip <$> f (\m -> Flip <$> Lazy.runWriterT m)
-  {-# INLINABLE liftWith #-}
+  hmap = Lazy.mapWriterT
+  {-# INLINE hmap #-}
+instance Monoid w => Accumulate (Lazy.WriterT w) where
+  hmapS f = Lazy.mapWriterT (fmap (\(s, (a, w)) -> ((s, a), w)) . f)
+  {-# INLINABLE hmapS #-}
+instance Monoid w => Choice (Lazy.WriterT w) where
+  choice f = Lazy.WriterT $ f Lazy.runWriterT
+  {-# INLINE choice #-}
 
 instance Monoid w => Handler (Strict.WriterT w) where
-  type HandlerState (Strict.WriterT w) = Flip (,) w
-  liftWith f = Strict.WriterT $ unFlip <$> f (\m -> Flip <$> Strict.runWriterT m)
-  {-# INLINABLE liftWith #-}
+  hmap = Strict.mapWriterT
+  {-# INLINE hmap #-}
+instance Monoid w => Accumulate (Strict.WriterT w) where
+  hmapS f = Strict.mapWriterT (fmap (\(s, (a, w)) -> ((s, a), w)) . f)
+  {-# INLINABLE hmapS #-}
+instance Monoid w => Choice (Strict.WriterT w) where
+  choice f = Strict.WriterT $ f Strict.runWriterT
+  {-# INLINE choice #-}
 
 -- | An open type family that is used to determine which effects ought to be handled by which
 -- handlers. If @'Handles' t eff@ ~ ''True' for some handler @t@ and effect @eff@, the handler will
@@ -208,40 +178,93 @@ deriving newtype instance MonadPlus (EffsT ts m) => MonadPlus (HandlerT tag ts m
 deriving newtype instance MonadIO (EffsT ts m) => MonadIO (HandlerT tag ts m)
 deriving newtype instance (Monad b, MonadBase b (EffsT ts m)) => MonadBase b (HandlerT tag ts m)
 
-class Monad (EffsT ts m) => MonadTransHandler tag ts m where
-  liftHandler :: m a -> HandlerT tag ts m a
-instance Monad m => MonadTransHandler tag '[] m where
-  liftHandler = HandlerT
-  {-# INLINE liftHandler #-}
-instance (Handler t, MonadTransHandler tag ts m) => MonadTransHandler tag (t ': ts) m where
-  liftHandler = HandlerT . lift . runHandlerT . liftHandler @tag @ts
-  {-# INLINABLE liftHandler #-}
+-- | An __internal__ helper class used to work around GHC’s inability to handle quantified
+-- constraints over type families. The constraint @(forall m. c m => 'OverEffs' c ts m)@ is morally
+-- equivalent to @(forall m. c m => c ('EffsT' ts m))@, but the latter is not allowed by GHC. The
+-- cost of this less direct encoding is that instances must be manually brought into scope using
+-- 'overEffs' and visible type application.
+class OverEffs c ts m where
+  overEffs :: (c (EffsT ts m) => r) -> r
+instance c (EffsT ts m) => OverEffs c ts m where
+  overEffs = id
+  {-# INLINE overEffs #-}
 
-instance (forall m. Monad m => MonadTransHandler tag ts m) => MonadTrans (HandlerT tag ts) where
-  lift = liftHandler
-  {-# INLINE lift #-}
+-- | An __internal__ helper class used to implement 'MonadTrans' and 'MonadTransControl' instances
+-- for 'HandlerT'. This allows us to avoid making 'HandlerT' a data family by using 'inductHandler'
+-- to perform induction over the type-level list of handlers. (We want to avoid making 'HandlerT' a
+-- data family so that the interface is simpler, as it allows 'runHandlerT' to return an ordinary
+-- stack of 'EffT' transformers.)
+class InductHandler c tag ts where
+  inductHandler
+    :: (ts ~ '[] => r)
+    -> (forall t ts'.
+         ( ts ~ (t ': ts')
+         , c (EffT t)
+         , c (HandlerT tag ts')
+         , forall m. Functor m => OverEffs Functor ts' m
+         , forall m. Monad m => OverEffs Monad ts' m
+         )
+       => Proxy ts -> r)
+    -> r
+instance InductHandler c tag '[] where
+  inductHandler a _ = a
+  {-# INLINE inductHandler #-}
+instance
+  ( forall m. Functor m => OverEffs Functor ts m
+  , forall m. Monad m => OverEffs Monad ts m
+  , c (EffT t), c (HandlerT tag ts)
+  ) => InductHandler c tag (t ': ts) where
+  inductHandler _ b = b (Proxy @(t ': ts))
+  {-# INLINE inductHandler #-}
 
-class MonadTransHandler tag ts m => HandlerHandler tag ts m where
-  type EffsState ts :: Type -> Type
-  liftHandlerWith
-    :: ((forall r. HandlerT tag ts m r -> m (EffsState ts r)) -> m (EffsState ts a))
-    -> HandlerT tag ts m a
-instance Monad m => HandlerHandler tag '[] m where
-  type EffsState '[] = Identity
-  liftHandlerWith f = HandlerT (runIdentity <$> f (\m -> Identity <$> runHandlerT m))
-  {-# INLINABLE liftHandlerWith #-}
-instance (Monad m, Handler t, HandlerHandler tag ts m) => HandlerHandler tag (t ': ts) m where
-  type EffsState (t ': ts) = Compose (EffsState ts) (HandlerState t)
-  liftHandlerWith f = HandlerT $ liftWith $ \lowerT ->
-    runHandlerT $ liftHandlerWith @tag @ts $ \lowerTs ->
-      getCompose <$> f (\m -> fmap Compose $ lowerTs $ HandlerT $ lowerT $ runHandlerT m)
-  {-# INLINABLE liftHandlerWith #-}
+instance InductHandler MonadTrans tag ts => MonadTrans (HandlerT tag ts) where
+  lift :: forall m a. Monad m => m a -> HandlerT tag ts m a
+  lift = inductHandler @MonadTrans @tag @ts HandlerT $
+    \(_ :: Proxy (t ': ts')) -> overEffs @Monad @ts' @m $
+      HandlerT . lift . runHandlerT . lift @(HandlerT tag ts')
+  {-# INLINABLE lift #-}
 
 instance
-  ( forall m. Monad m => Monad (HandlerT tag ts m)
-  , forall m. Monad m => HandlerHandler tag ts m
-  , Functor (EffsState ts)
+  ( MonadTrans (HandlerT tag ts)
+  , forall m. Functor m => Functor (HandlerT tag ts m)
+  , forall m. Monad m => Monad (HandlerT tag ts m)
+  , InductHandler Handler tag ts
   ) => Handler (HandlerT tag ts) where
-  type HandlerState (HandlerT tag ts) = EffsState ts
-  liftWith = liftHandlerWith
-  {-# INLINE liftWith #-}
+
+  hmap
+    :: forall m n a. (Functor m, Functor n)
+    => (forall b. m b -> n b) -> HandlerT tag ts m a -> HandlerT tag ts n a
+  hmap f = inductHandler @Handler @tag @ts (HandlerT . f . runHandlerT) $
+    \(_ :: Proxy (t ': ts')) -> overEffs @Functor @ts' @m $ overEffs @Functor @ts' @n $
+      HandlerT . hmap (runHandlerT . hmap @(HandlerT tag ts') f . HandlerT) . runHandlerT
+  {-# INLINABLE hmap #-}
+
+instance (Handler (HandlerT tag ts), InductHandler Accumulate tag ts) => Accumulate (HandlerT tag ts) where
+  accumulate
+    :: forall m s a. Functor m
+    => HandlerT tag ts (Compose m ((,) s)) a -> HandlerT tag ts m (s, a)
+  accumulate = inductHandler @Accumulate @tag @ts (HandlerT . getCompose . runHandlerT) $
+    \(_ :: Proxy (t ': ts')) ->
+      overEffs @Functor @ts' @m $ overEffs @Functor @ts' @(Compose m ((,) s)) $
+        let accumulate' :: EffsT ts' (Compose m ((,) s)) b -> Compose (EffsT ts' m) ((,) s) b
+            accumulate' = Compose . runHandlerT . accumulate @(HandlerT tag ts') @m . HandlerT
+        in HandlerT . accumulate . hmap accumulate' . runHandlerT
+  {-# INLINABLE accumulate #-}
+
+  hmapS
+    :: forall m n s a. (Functor m, Functor n)
+    => (forall b. m b -> n (s, b)) -> HandlerT tag ts m a -> HandlerT tag ts n (s, a)
+  hmapS f = inductHandler @Accumulate @tag @ts (HandlerT . f . runHandlerT) $
+    \(_ :: Proxy (t ': ts')) -> overEffs @Functor @ts' @m $ overEffs @Functor @ts' @n $
+      HandlerT . hmapS (runHandlerT . hmapS @(HandlerT tag ts') f . HandlerT) . runHandlerT
+  {-# INLINABLE hmapS #-}
+
+instance (Handler (HandlerT tag ts), InductHandler Choice tag ts) => Choice (HandlerT tag ts) where
+  choice
+    :: forall m n a. (Functor m, Functor n)
+    => (forall b. (HandlerT tag ts m a -> m b) -> n b) -> HandlerT tag ts n a
+  choice f = inductHandler @Choice @tag @ts (HandlerT $ f runHandlerT) $
+    \(_ :: Proxy (t ': ts')) -> overEffs @Functor @ts' @m $ overEffs @Functor @ts' @n $
+      HandlerT $ choice $ \lowerT -> runHandlerT $ choice @(HandlerT tag ts') @m @n $ \lowerTs ->
+        f (lowerTs . HandlerT . lowerT . runHandlerT)
+  {-# INLINABLE choice #-}

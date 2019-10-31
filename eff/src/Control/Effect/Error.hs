@@ -29,12 +29,13 @@ class Monad m => Error e m where
   -- the given handler function, and execution resumes from the point of the call to 'catch'.
   catch :: m a -> (e -> m a) -> m a
 
-instance (Monad (t m), Send (Error e) t m) => Error e (EffT t m) where
+type instance RequiredTactics (Error e) = '[Choice]
+instance (Monad (t m), SendWith (Error e) t m) => Error e (EffT t m) where
   throw e = send @(Error e) (throw e)
   {-# INLINE throw #-}
   catch m f = sendWith @(Error e)
     (catch (runEffT m) (runEffT . f))
-    (liftWith $ \run -> catch (run $ runEffT m) (run . runEffT . f))
+    (choice $ \lower -> catch (lower $ runEffT m) (lower . runEffT . f))
   {-# INLINABLE catch #-}
 
 instance Monad m => Error e (ExceptT e m) where

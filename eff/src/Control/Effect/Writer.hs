@@ -20,7 +20,6 @@ import Control.Effect.Internal
 import Control.Effect.State
 import Control.Handler.Internal
 import Control.Monad.Trans.Class
-import Data.Functor
 
 -- | @'Writer' w@ is an effect that allows the accumulation of monoidal values of type @w@.
 --
@@ -37,16 +36,17 @@ class (Monoid w, Monad m) => Writer w m where
   -- | Executes the given action and modifies its output by applying the given function.
   censor :: (w -> w) -> m a -> m a
 
-instance (Monoid w, Monad (t m), Send (Writer w) t m) => Writer w (EffT t m) where
+type instance RequiredTactics (Writer w) = '[Accumulate]
+instance (Monoid w, Monad (t m), SendWith (Writer w) t m) => Writer w (EffT t m) where
   tell w = send @(Writer w) (tell w)
   {-# INLINE tell #-}
   listen m = sendWith @(Writer w)
     (listen (runEffT m))
-    (liftWith $ \lower -> listen (lower $ runEffT m) <&> \(w, s) -> (w,) <$> s)
+    (hmapS listen (runEffT m))
   {-# INLINABLE listen #-}
   censor f m = sendWith @(Writer w)
     (censor f (runEffT m))
-    (liftWith $ \lower -> censor f (lower $ runEffT m))
+    (hmap (censor f) (runEffT m))
   {-# INLINABLE censor #-}
 
 data WriterH

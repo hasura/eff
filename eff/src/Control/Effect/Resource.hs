@@ -24,7 +24,8 @@ import Control.Effect.Internal
 import Control.Effect.State
 import Control.Handler.Internal
 import Control.Monad.Trans.Except (ExceptT(..), runExceptT)
-import Control.Monad.Trans.Reader (ReaderT)
+import Control.Monad.Trans.Reader (ReaderT(..), runReaderT)
+import Control.Monad.Trans.State.Strict (StateT(..), runStateT)
 import Data.Functor.Identity
 
 -- | An effect that provides the ability to temporarily mask asynchronous interrupts.
@@ -68,19 +69,18 @@ instance Mask IO where
   {-# INLINE uninterruptibleMask #-}
 
 sendMask
-  :: Send Mask t m
+  :: SendWith Mask t m
   => (forall n c. Mask n => ((forall a. n a -> n a) -> n c) -> n c)
   -> ((forall a. EffT t m a -> EffT t m a) -> EffT t m b) -> EffT t m b
 sendMask mask' f = sendWith @Mask
   (mask' $ \restore -> runEffT $ f $ \m ->
     EffT $ restore $ runEffT m)
-  (liftWith $ \lowerOuter -> mask' $ \restore ->
-    lowerOuter $ runEffT $ f $ \m ->
-      liftWith $ \lowerInner ->
-        restore $ lowerInner m)
+  (choice $ \lower -> mask' $ \restore ->
+    lower $ runEffT $ f $ hmap restore)
 {-# INLINABLE sendMask #-}
 
-instance (Monad (t m), Send Mask t m) => Mask (EffT t m) where
+type instance RequiredTactics Mask = '[Choice]
+instance (Monad (t m), SendWith Mask t m) => Mask (EffT t m) where
   mask = sendMask mask
   {-# INLINE mask #-}
   uninterruptibleMask = sendMask uninterruptibleMask
@@ -118,16 +118,12 @@ instance MonadUnwind IO where
 deriving newtype instance MonadUnwind (t m) => MonadUnwind (EffT t m)
 deriving newtype instance MonadUnwind (EffsT ts m) => MonadUnwind (HandlerT tag ts m)
 
-onErrorTotal :: (Handler t, MonadUnwind m) => t m a -> t m b -> t m a
-onErrorTotal action cleanup = liftWith $ \lower -> onError (lower action) (lower cleanup)
-{-# INLINABLE onErrorTotal #-}
-
 instance MonadUnwind m => MonadUnwind (ReaderT r m) where
-  onError = onErrorTotal
-  {-# INLINE onError #-}
+  onError action cleanup = ReaderT $ \r -> onError (runReaderT action r) (runReaderT cleanup r)
+  {-# INLINABLE onError #-}
 instance MonadUnwind m => MonadUnwind (StateT r m) where
-  onError = onErrorTotal
-  {-# INLINE onError #-}
+  onError action cleanup = StateT $ \s -> onError (runStateT action s) (runStateT cleanup s)
+  {-# INLINABLE onError #-}
 
 instance MonadUnwind m => MonadUnwind (ExceptT e m) where
   onError action cleanup =

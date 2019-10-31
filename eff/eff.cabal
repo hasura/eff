@@ -48,6 +48,7 @@ library
     Control.Effect.State
     Control.Effect.Writer
     Control.Handler.Internal
+    Control.Handler.Tactics
 
 test-suite eff-tests
   import: common

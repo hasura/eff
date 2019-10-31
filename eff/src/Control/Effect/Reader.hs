@@ -32,14 +32,15 @@ class Monad m => Reader r m where
   -- | Runs a subcomputation in an environment modified by the given function.
   local :: (r -> r) -> m a -> m a
 
-instance (Monad (t m), Send (Reader r) t m) => Reader r (EffT t m) where
+type instance RequiredTactics (Reader r) = '[]
+instance (Monad (t m), SendWith (Reader r) t m) => Reader r (EffT t m) where
   ask = send @(Reader r) ask
   {-# INLINE ask #-}
   asks f = send @(Reader r) (asks f)
   {-# INLINE asks #-}
   local f m = sendWith @(Reader r)
     (local f (runEffT m))
-    (liftWith $ \lower -> local f (lower $ runEffT m))
+    (hmap (local f) (runEffT m))
   {-# INLINABLE local #-}
 
 instance Monad m => Reader r (ReaderT r m) where
