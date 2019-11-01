@@ -7,14 +7,8 @@ import Control.Monad
 import Control.Monad.Base
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
--- import Control.Monad.Trans.Cont
--- import Control.Monad.Trans.Identity
--- import Control.Effect.Internal
 import Control.Handler.Internal
 import Data.Functor
--- import Data.Functor.Identity
--- import Data.Coerce
--- import Data.Kind (Type)
 
 newtype NonDetT m a = NonDetT { runNonDetT :: m (Maybe (a, NonDetT m a)) }
   deriving (Functor)
@@ -74,26 +68,25 @@ instance MonadTrans NonDetT where
   lift m = NonDetT $ m <&> \x -> Just (x, empty)
   {-# INLINABLE lift #-}
 
--- instance Handler NonDetT where
---   hmap f (NonDetT m) = NonDetT $ fmap (fmap $ hmap f) <$> f m
---   {-# INLINABLE hmap #-}
+instance Handler NonDetT where
+  newtype HandlerState NonDetT m r a = NonDetTState { runNonDetTState :: Maybe (a, NonDetT m r) }
+    deriving (Functor)
+  hmap f (NonDetT m) = NonDetT $ fmap (fmap $ hmap f) . runNonDetTState <$> f (NonDetTState <$> m)
+  {-# INLINABLE hmap #-}
 
--- instance Accumulate NonDetT where
---   hmapS f (NonDetT m) = NonDetT $ f m <&> \(s, a) -> case a of
---     Nothing      -> Nothing
---     Just (x, m') -> Just ((s, x), hmapS f m')
---   {-# INLINABLE hmapS #-}
---
--- instance Scoped NonDetT where
---   scoped f k = NonDetT $ f $ \x -> runNonDetT (k x) <&> \case
---     Nothing -> Nothing
---     Just (x, m') -> Just (x, scoped f k m')
+instance Scoped NonDetT where
+  scoped f g k = NonDetT $
+    (runNonDetTState <$> f (fmap NonDetTState . runNonDetT . k)) <&> \case
+      Nothing     -> Nothing
+      Just (x, m) -> Just (x, hmap g m)
+  {-# INLINABLE scoped #-}
 
--- instance Choice NonDetT where
---   choice f =
---     let m1 = NonDetT $ f $ \(NonDetT m) ->
---           _
---     in _
+instance Choice NonDetT where
+  choice m0 f0 _ = go m0 f0 where
+    go m f = NonDetT $ runNonDetT (f (NonDetTState <$> runNonDetT m)) <&> \case
+      Nothing      -> Nothing
+      Just (x, m') -> Just (x, go m' f)
+  {-# INLINABLE choice #-}
 
 instance MonadIO m => MonadIO (NonDetT m) where
   liftIO = lift . liftIO

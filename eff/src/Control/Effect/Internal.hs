@@ -16,6 +16,7 @@ import Control.Monad.Trans.Identity
 import Data.Coerce
 import Data.Kind (Constraint, Type)
 import Data.Type.Coercion
+import GHC.Generics (Generic, Generic1)
 -- import GHC.TypeLits (TypeError, ErrorMessage(..))
 
 import Control.Handler.Internal
@@ -24,7 +25,39 @@ import Control.Handler.Internal
 type EffectK = (Type -> Type) -> Constraint
 
 newtype LiftT (t :: HandlerK) m a = LiftT { runLiftT :: t m a }
-  deriving newtype (Functor, Applicative, Monad, MonadTrans, Handler, Scoped, Choice)
+  deriving newtype (Functor, Applicative, Monad, MonadTrans)
+
+instance Handler t => Handler (LiftT t) where
+  newtype HandlerState (LiftT t) m r a = LiftTState { runLiftTState :: HandlerState t m r a }
+  hmap f = LiftT . hmap (fmap runLiftTState . f . fmap LiftTState) . runLiftT
+  {-# INLINABLE hmap #-}
+
+deriving newtype instance Eq (HandlerState t m r a) => Eq (HandlerState (LiftT t) m r a)
+deriving newtype instance Ord (HandlerState t m r a) => Ord (HandlerState (LiftT t) m r a)
+deriving newtype instance Show (HandlerState t m r a) => Show (HandlerState (LiftT t) m r a)
+deriving newtype instance Read (HandlerState t m r a) => Read (HandlerState (LiftT t) m r a)
+deriving newtype instance Semigroup (HandlerState t m r a) => Semigroup (HandlerState (LiftT t) m r a)
+deriving newtype instance Monoid (HandlerState t m r a) => Monoid (HandlerState (LiftT t) m r a)
+deriving newtype instance Generic (HandlerState t m r a) => Generic (HandlerState (LiftT t) m r a)
+deriving newtype instance Generic1 (HandlerState t m r) => Generic1 (HandlerState (LiftT t) m r)
+deriving newtype instance Functor (HandlerState t m r) => Functor (HandlerState (LiftT t) m r)
+deriving newtype instance Applicative (HandlerState t m r) => Applicative (HandlerState (LiftT t) m r)
+deriving newtype instance Alternative (HandlerState t m r) => Alternative (HandlerState (LiftT t) m r)
+deriving newtype instance Monad (HandlerState t m r) => Monad (HandlerState (LiftT t) m r)
+deriving newtype instance MonadPlus (HandlerState t m r) => MonadPlus (HandlerState (LiftT t) m r)
+
+instance Scoped t => Scoped (LiftT t) where
+  scoped f g k = LiftT $ scoped
+    (\h -> coerce <$> f (fmap coerce . h))
+    (fmap coerce . g . fmap coerce)
+    (coerce k)
+  {-# INLINABLE scoped #-}
+
+instance Choice t => Choice (LiftT t) where
+  choice m f g = LiftT $ choice
+    (coerce m) (\m' -> coerce $ f (coerce <$> m'))
+    (\choose -> coerce <$> g (fmap coerce . choose . coerce))
+  {-# INLINABLE choice #-}
 
 instance (Alternative m, Monad m, Choice t) => Alternative (LiftT t m) where
   empty = lift empty
@@ -46,7 +79,39 @@ instance (Alternative m, Monad m, Choice t) => MonadPlus (LiftT t m)
 -- restrictions placed on the underlying monad (though effects will not be able to be automatically
 -- lifted through non-'EffT' layers).
 newtype EffT (t :: HandlerK) m a = EffT { runEffT :: t m a }
-  deriving newtype (Functor, Applicative, Monad, MonadTrans, Handler, Scoped, Choice)
+  deriving newtype (Functor, Applicative, Monad, MonadTrans)
+
+instance Handler t => Handler (EffT t) where
+  newtype HandlerState (EffT t) m r a = EffTState { runEffTState :: HandlerState t m r a }
+  hmap f = EffT . hmap (fmap runEffTState . f . fmap EffTState) . runEffT
+  {-# INLINABLE hmap #-}
+
+deriving newtype instance Eq (HandlerState t m r a) => Eq (HandlerState (EffT t) m r a)
+deriving newtype instance Ord (HandlerState t m r a) => Ord (HandlerState (EffT t) m r a)
+deriving newtype instance Show (HandlerState t m r a) => Show (HandlerState (EffT t) m r a)
+deriving newtype instance Read (HandlerState t m r a) => Read (HandlerState (EffT t) m r a)
+deriving newtype instance Semigroup (HandlerState t m r a) => Semigroup (HandlerState (EffT t) m r a)
+deriving newtype instance Monoid (HandlerState t m r a) => Monoid (HandlerState (EffT t) m r a)
+deriving newtype instance Generic (HandlerState t m r a) => Generic (HandlerState (EffT t) m r a)
+deriving newtype instance Generic1 (HandlerState t m r) => Generic1 (HandlerState (EffT t) m r)
+deriving newtype instance Functor (HandlerState t m r) => Functor (HandlerState (EffT t) m r)
+deriving newtype instance Applicative (HandlerState t m r) => Applicative (HandlerState (EffT t) m r)
+deriving newtype instance Alternative (HandlerState t m r) => Alternative (HandlerState (EffT t) m r)
+deriving newtype instance Monad (HandlerState t m r) => Monad (HandlerState (EffT t) m r)
+deriving newtype instance MonadPlus (HandlerState t m r) => MonadPlus (HandlerState (EffT t) m r)
+
+instance Scoped t => Scoped (EffT t) where
+  scoped f g k = EffT $ scoped
+    (\h -> fmap coerce $ f (fmap coerce . h))
+    (fmap coerce . g . fmap coerce)
+    (coerce k)
+  {-# INLINABLE scoped #-}
+
+instance Choice t => Choice (EffT t) where
+  choice m f g = EffT $ choice
+    (coerce m) (\m' -> coerce $ f (coerce <$> m'))
+    (\choose -> coerce <$> g (fmap coerce . choose . coerce))
+  {-# INLINABLE choice #-}
 
 instance (Send Alternative t m, Monad (t m)) => Alternative (EffT t m) where
   empty = send @Alternative $ empty
