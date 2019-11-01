@@ -1,9 +1,8 @@
 module Control.Handler.Tactics
   ( TacticK
-  , RequiredTactics
-  , Accumulate(..)
+  , Handler(..)
+  , Scoped(..)
   , Choice(..)
   ) where
 
-import Control.Effect.Internal
 import Control.Handler.Internal

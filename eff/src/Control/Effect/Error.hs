@@ -15,7 +15,9 @@ import qualified Control.Monad.Trans.Except as Trans
 
 import Control.Effect.Internal
 import Control.Handler.Internal
+import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
+import Data.Coerce
 
 -- | @'Error' e@ is an effect that allows throwing and catching errors of type @e@. Note that these
 -- have no relation to Haskell’s built-in support for synchronous or asynchronous runtime exceptions
@@ -29,13 +31,16 @@ class Monad m => Error e m where
   -- the given handler function, and execution resumes from the point of the call to 'catch'.
   catch :: m a -> (e -> m a) -> m a
 
-type instance RequiredTactics (Error e) = '[Choice]
-instance (Monad (t m), SendWith (Error e) t m) => Error e (EffT t m) where
-  throw e = send @(Error e) (throw e)
+instance (Choice t, Scoped t, Error e m) => Error e (LiftT t m) where
+  throw = lift . throw
   {-# INLINE throw #-}
-  catch m f = sendWith @(Error e)
-    (catch (runEffT m) (runEffT . f))
-    (choice $ \lower -> catch (lower $ runEffT m) (lower . runEffT . f))
+  catch m f = choice m (\m' -> scoped (catch m') id f) (\choose -> catch (choose m) (choose . f))
+  {-# INLINE catch #-}
+
+instance Send (Error e) t m => Error e (EffT t m) where
+  throw e = send @(Error e) $ throw e
+  {-# INLINE throw #-}
+  catch m f = send @(Error e) $ catch (coerce m) (coerce . f)
   {-# INLINABLE catch #-}
 
 instance Monad m => Error e (ExceptT e m) where

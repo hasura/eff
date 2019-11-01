@@ -26,6 +26,7 @@ import Control.Handler.Internal
 import Control.Monad.Trans.Except (ExceptT(..), runExceptT)
 import Control.Monad.Trans.Reader (ReaderT(..), runReaderT)
 import Control.Monad.Trans.State.Strict (StateT(..), runStateT)
+import Data.Coerce
 import Data.Functor.Identity
 
 -- | An effect that provides the ability to temporarily mask asynchronous interrupts.
@@ -68,22 +69,31 @@ instance Mask IO where
   uninterruptibleMask = IO.uninterruptibleMask
   {-# INLINE uninterruptibleMask #-}
 
-sendMask
-  :: SendWith Mask t m
-  => (forall n c. Mask n => ((forall a. n a -> n a) -> n c) -> n c)
-  -> ((forall a. EffT t m a -> EffT t m a) -> EffT t m b) -> EffT t m b
-sendMask mask' f = sendWith @Mask
-  (mask' $ \restore -> runEffT $ f $ \m ->
-    EffT $ restore $ runEffT m)
-  (choice $ \lower -> mask' $ \restore ->
-    lower $ runEffT $ f $ hmap restore)
-{-# INLINABLE sendMask #-}
+-- This is a small wrapper type to avoid impredicativity when lifting via 'scoped'.
+newtype Restore m = Restore (forall a. m a -> m a)
 
-type instance RequiredTactics Mask = '[Choice]
-instance (Monad (t m), SendWith Mask t m) => Mask (EffT t m) where
-  mask = sendMask mask
+liftMask
+  :: (Scoped t, Mask m)
+  => (forall c. ((forall a. m a -> m a) -> m c) -> m c)
+  -> ((forall a. t m a -> t m a) -> t m b) -> t m b
+liftMask mask' f = scoped
+  (\f' -> mask' $ \restore -> f' $ Restore restore)
+  (\m -> mask' $ const m)
+  (\(Restore restore) -> f (hmap restore))
+{-# INLINABLE liftMask #-}
+
+instance (Scoped t, Mask m) => Mask (LiftT t m) where
+  mask = liftMask mask
   {-# INLINE mask #-}
-  uninterruptibleMask = sendMask uninterruptibleMask
+  uninterruptibleMask = liftMask uninterruptibleMask
+  {-# INLINE uninterruptibleMask #-}
+
+instance Send Mask t m => Mask (EffT t m) where
+  mask f = send @Mask $ mask $ \restore ->
+    coerce $ f $ \(m :: EffT t m a) -> coerce $ restore @a $ coerce m
+  {-# INLINE mask #-}
+  uninterruptibleMask f = send @Mask $ uninterruptibleMask $ \restore ->
+    coerce $ f $ \(m :: EffT t m a) -> coerce $ restore @a $ coerce m
   {-# INLINE uninterruptibleMask #-}
 
 -- | The class of monads that support registering cleanup actions on failure. Note that this is

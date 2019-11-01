@@ -11,7 +11,9 @@ import qualified Control.Monad.Trans.Reader as Trans
 
 import Control.Effect.Internal
 import Control.Handler.Internal
+import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
+import Data.Coerce
 
 -- | @'Reader' r@ is an effect that provides access to a global environment of type @r@.
 --
@@ -32,16 +34,21 @@ class Monad m => Reader r m where
   -- | Runs a subcomputation in an environment modified by the given function.
   local :: (r -> r) -> m a -> m a
 
-type instance RequiredTactics (Reader r) = '[]
-instance (Monad (t m), SendWith (Reader r) t m) => Reader r (EffT t m) where
+instance (Handler t, Reader r m) => Reader r (LiftT t m) where
+  ask = lift ask
+  {-# INLINE ask #-}
+  asks = lift . asks
+  {-# INLINE asks #-}
+  local f = hmap (local f)
+  {-# INLINE local #-}
+
+instance Send (Reader r) t m => Reader r (EffT t m) where
   ask = send @(Reader r) ask
   {-# INLINE ask #-}
-  asks f = send @(Reader r) (asks f)
+  asks f = send @(Reader r) $ asks f
   {-# INLINE asks #-}
-  local f m = sendWith @(Reader r)
-    (local f (runEffT m))
-    (hmap (local f) (runEffT m))
-  {-# INLINABLE local #-}
+  local f m = send @(Reader r) $ local f (coerce m)
+  {-# INLINE local #-}
 
 instance Monad m => Reader r (ReaderT r m) where
   ask = Trans.ask

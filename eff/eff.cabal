@@ -43,6 +43,7 @@ library
     Control.Effect
     Control.Effect.Error
     Control.Effect.Internal
+    Control.Effect.NonDet
     Control.Effect.Reader
     Control.Effect.Resource
     Control.Effect.State

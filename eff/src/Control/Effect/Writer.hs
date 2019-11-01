@@ -20,6 +20,8 @@ import Control.Effect.Internal
 import Control.Effect.State
 import Control.Handler.Internal
 import Control.Monad.Trans.Class
+import Data.Coerce
+import Data.Functor
 
 -- | @'Writer' w@ is an effect that allows the accumulation of monoidal values of type @w@.
 --
@@ -36,18 +38,21 @@ class (Monoid w, Monad m) => Writer w m where
   -- | Executes the given action and modifies its output by applying the given function.
   censor :: (w -> w) -> m a -> m a
 
-type instance RequiredTactics (Writer w) = '[Accumulate]
-instance (Monoid w, Monad (t m), SendWith (Writer w) t m) => Writer w (EffT t m) where
-  tell w = send @(Writer w) (tell w)
+instance (Handler t, Writer w m) => Writer w (LiftT t m) where
+  tell w = lift $ tell w
   {-# INLINE tell #-}
-  listen m = sendWith @(Writer w)
-    (listen (runEffT m))
-    (hmapS listen (runEffT m))
-  {-# INLINABLE listen #-}
-  censor f m = sendWith @(Writer w)
-    (censor f (runEffT m))
-    (hmap (censor f) (runEffT m))
-  {-# INLINABLE censor #-}
+  listen = hmap $ \m -> listen m <&> \(w, a) -> (w,) <$> a
+  {-# INLINE listen #-}
+  censor f = hmap (censor f)
+  {-# INLINE censor #-}
+
+instance (Monoid w, Send (Writer w) t m) => Writer w (EffT t m) where
+  tell w = send @(Writer w) $ tell w
+  {-# INLINE tell #-}
+  listen m = send @(Writer w) $ listen (coerce m)
+  {-# INLINE listen #-}
+  censor f m = send @(Writer w) $ censor f (coerce m)
+  {-# INLINE censor #-}
 
 data WriterH
 -- | This handler is implemented on top of 'StateT' rather than using a @WriterT@ implementation

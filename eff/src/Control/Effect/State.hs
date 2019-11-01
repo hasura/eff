@@ -17,6 +17,8 @@ module Control.Effect.State
 import qualified Control.Monad.Trans.State.Strict as Trans
 
 import Control.Effect.Internal
+import Control.Handler.Internal
+import Control.Monad.Trans.Class
 import Control.Monad.Trans.State.Strict (StateT, execStateT, evalStateT, runStateT)
 import Data.Tuple
 
@@ -37,12 +39,20 @@ class Monad m => State s m where
   modify f = put . f =<< get
   {-# INLINE modify #-}
 
-instance (Monad (t m), Send (State s) t m) => State s (EffT t m) where
+instance (Handler t, State s m) => State s (LiftT t m) where
+  get = lift get
+  {-# INLINE get #-}
+  put = lift . put
+  {-# INLINE put #-}
+  modify = lift . modify
+  {-# INLINE modify #-}
+
+instance Send (State s) t m => State s (EffT t m) where
   get = send @(State s) get
   {-# INLINE get #-}
-  put s = send @(State s) (put s)
+  put s = send @(State s) $ put s
   {-# INLINE put #-}
-  modify f = send @(State s) (modify f)
+  modify f = send @(State s) $ modify f
   {-# INLINE modify #-}
 
 -- | Note: this instance provides 'put' and 'modify' operations that are strict in the state.

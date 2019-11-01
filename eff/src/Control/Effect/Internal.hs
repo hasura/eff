@@ -7,18 +7,32 @@
 
 module Control.Effect.Internal where
 
-import Control.Applicative (Alternative(..))
-import Control.Monad (MonadPlus(..))
-import Control.Monad.Base (MonadBase(..))
-import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad.Trans.Class (MonadTrans(..))
+import Control.Applicative
+import Control.Monad
+import Control.Monad.Base
+import Control.Monad.IO.Class
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Identity
+import Data.Coerce
 import Data.Kind (Constraint, Type)
-import GHC.TypeLits (TypeError, ErrorMessage(..))
+import Data.Type.Coercion
+-- import GHC.TypeLits (TypeError, ErrorMessage(..))
 
-import {-# SOURCE #-} Control.Handler.Internal
+import Control.Handler.Internal
 
 -- | The kind of effects, which are classes of monads.
 type EffectK = (Type -> Type) -> Constraint
+
+newtype LiftT (t :: HandlerK) m a = LiftT { runLiftT :: t m a }
+  deriving newtype (Functor, Applicative, Monad, MonadTrans, Handler, Scoped, Choice)
+
+instance (Alternative m, Monad m, Choice t) => Alternative (LiftT t m) where
+  empty = lift empty
+  {-# INLINE empty #-}
+  a <|> b = choice a (\a' -> hmap (a' <|>) b) (\choose -> choose a <|> choose b)
+  {-# INLINE (<|>) #-}
+
+instance (Alternative m, Monad m, Choice t) => MonadPlus (LiftT t m)
 
 -- | A monad transformer for handling effects. @('EffT' t)@ is actually no different from @t@ at
 -- runtime, but it provides a different set of instances. Wrapping a monad transformer with 'EffT'
@@ -32,18 +46,15 @@ type EffectK = (Type -> Type) -> Constraint
 -- restrictions placed on the underlying monad (though effects will not be able to be automatically
 -- lifted through non-'EffT' layers).
 newtype EffT (t :: HandlerK) m a = EffT { runEffT :: t m a }
-  deriving newtype (Functor, Applicative, Monad, MonadTrans, Handler, Accumulate, Choice)
+  deriving newtype (Functor, Applicative, Monad, MonadTrans, Handler, Scoped, Choice)
 
-type instance RequiredTactics Alternative = '[Choice]
-instance (SendWith Alternative t m, Monad (t m)) => Alternative (EffT t m) where
-  empty = send @Alternative empty
+instance (Send Alternative t m, Monad (t m)) => Alternative (EffT t m) where
+  empty = send @Alternative $ empty
   {-# INLINE empty #-}
-  a <|> b = sendWith @Alternative
-    (runEffT a <|> runEffT b)
-    (choice $ \lower -> lower (runEffT a) <|> lower (runEffT b))
-  {-# INLINABLE (<|>) #-}
+  a <|> b = send @Alternative $ coerce a <|> coerce b
+  {-# INLINE (<|>) #-}
 
-instance (SendWith Alternative t m, Monad (t m)) => MonadPlus (EffT t m)
+instance (Send Alternative t m, Monad (t m)) => MonadPlus (EffT t m)
 
 instance (MonadIO m, MonadTrans t, Monad (t m)) => MonadIO (EffT t m) where
   liftIO = lift . liftIO
@@ -61,19 +72,41 @@ type family EffsT ts m where
   EffsT '[]       m = m
   EffsT (t ': ts) m = EffT t (EffsT ts m)
 
-class Handle (handles :: Bool) eff tactics t m where
-  handle
-    :: (eff (t m) => t m a)
-    -> ((All tactics t, eff m) => t m a)
-    -> EffT t m a
-
-instance eff (t m) => Handle 'True eff tactics t m where
-  handle m _ = EffT m
+class Handle (handles :: Bool) eff (t :: HandlerK) m where
+  handle :: (forall n. (eff n, Coercible (t m) n) => n a) -> t m a
+instance eff (t m) => Handle 'True eff t m where
+  handle m = m
+  {-# INLINE handle #-}
+instance HandleLift (IsHandlerT t) eff t m => Handle 'False eff t m where
+  handle = handleLift @(IsHandlerT t) @eff
   {-# INLINE handle #-}
 
-instance (All tactics t, eff m) => Handle 'False eff tactics t m where
-  handle _ m = EffT m
-  {-# INLINE handle #-}
+type family IsHandlerT t where
+  IsHandlerT (HandlerT _ _) = 'True
+  IsHandlerT _              = 'False
+
+class HandleLift (isHandlerT :: Bool) eff (t :: HandlerK) m where
+  handleLift :: (forall n. (eff n, Coercible (t m) n) => n a) -> t m a
+instance eff (LiftT t m) => HandleLift 'False eff t m where
+  handleLift m = coerce (m @(LiftT t m))
+  {-# INLINE handleLift #-}
+instance eff (LiftT IdentityT m) => HandleLift 'True eff (HandlerT tag '[]) m where
+  handleLift m = coerce (m @(LiftT IdentityT m))
+  {-# INLINE handleLift #-}
+instance
+  ( eff (LiftT t (EffT (HandlerT VoidH ts) m))
+  , Coercible (t (EffsT ts m)) (t (EffT (HandlerT VoidH ts) m))
+  ) => HandleLift 'True eff (HandlerT tag (t ': ts)) m where
+  handleLift
+    :: forall a
+     . (forall n. (eff n, Coercible (HandlerT tag (t ': ts) m) n) => n a)
+    -> HandlerT tag (t ': ts) m a
+  handleLift m = case etaExpandCoercion @(t (EffsT ts m)) @(t (EffT (HandlerT VoidH ts) m)) @a of
+    Coercion -> coerce $ m @(LiftT t (EffT (HandlerT VoidH ts) m))
+    where
+      etaExpandCoercion :: forall f g b. Coercible f g => Coercion (f b) (g b)
+      etaExpandCoercion = Coercion
+  {-# INLINE handleLift #-}
 
 -- | A typeclass used to lift effectful actions into effect handlers. This is not necessary to use
 -- directly when using effects, but it is used as part of defining new effects. Every effect should
@@ -102,66 +135,66 @@ class (Handler t, Monad m) => Send eff t m where
   -- automatically infer.
   --
   -- @'send' \@/eff/ /m/@ is equivalent to @'sendWith' \@/eff/ /m/ ('lift' /m/)@.
-  send :: (forall n. eff n => n a) -> EffT t m a
+  send :: (forall n. (eff n, Coercible (EffT t m) n) => n a) -> EffT t m a
 
-instance (Handler t, Monad m, Handle (Handles t eff) eff '[] t m) => Send eff t m where
-  send m = handle @(Handles t eff) @eff @'[] m (lift m)
+instance (Handler t, Monad m, Handle (Handles t eff) eff t m) => Send eff t m where
+  send m = EffT (handle @(Handles t eff) @eff m)
   {-# INLINE send #-}
 
-type family RequiredTactics (eff :: EffectK) :: [TacticK]
-type family DeclaredTactics eff where
-  DeclaredTactics eff = NotStuck (RequiredTactics eff) (TypeError (
-    'Text "Missing a RequiredTactics declaration for ‘" ':<>: 'ShowType eff ':<>: 'Text "’"
-    ':$$: 'Text "  " ':<>:
-    ( 'Text "(Probable fix: add a declaration of the form"
-      ':$$: 'Text "   type instance " ':<>: 'ShowType (RequiredTactics eff) ':<>: 'Text " = '[...]"
-      ':$$: 'Text " alongside the ‘" ':<>: 'ShowType eff ':<>: 'Text "’ instance for EffT.)" )))
+-- type family RequiredTactics (eff :: EffectK) :: [TacticK]
+-- type family DeclaredTactics eff where
+--   DeclaredTactics eff = NotStuck (RequiredTactics eff) (TypeError (
+--     'Text "Missing a RequiredTactics declaration for ‘" ':<>: 'ShowType eff ':<>: 'Text "’"
+--     ':$$: 'Text "  " ':<>:
+--     ( 'Text "(Probable fix: add a declaration of the form"
+--       ':$$: 'Text "   type instance " ':<>: 'ShowType (RequiredTactics eff) ':<>: 'Text " = '[...]"
+--       ':$$: 'Text " alongside the ‘" ':<>: 'ShowType eff ':<>: 'Text "’ instance for EffT.)" )))
+--
+-- data family Skolem k :: k
+-- type family NotStuck (t :: k) err :: Constraint where
+--   NotStuck (Skolem k) _ = TypeError ('Text "Internal error: NotStuck instance for Skolem was selected!")
+--   NotStuck _          _ = ()
 
-data family Skolem k :: k
-type family NotStuck (t :: k) err :: Constraint where
-  NotStuck (Skolem k) _ = TypeError ('Text "Internal error: NotStuck instance for Skolem was selected!")
-  NotStuck _          _ = ()
+-- class Send eff t m => SendWith eff t m where
+--   -- | Constructs an @'EffT' t m a@ computation for a higher-order/scoped effect @eff@ from two
+--   -- actions:
+--   --
+--   --   1. A “run” action, which executes the effect in the @(t m)@ monad given @(t m)@ has an
+--   --      instance of @eff@.
+--   --
+--   --   2. A “lift” action, which lifts the effect through @(t m)@ into @m@ given that @t@ has a
+--   --      'Handler' instance and @m@ has an instance of @eff@.
+--   --
+--   -- Each higher-order method in the 'EffT' instance for a given effect should use 'sendWith' to
+--   -- specify how it ought to be lifted through effect handlers. For example, the definition of
+--   -- 'Control.Effect.Reader.local' looks like this:
+--   --
+--   -- @
+--   -- 'Control.Effect.Reader.local' f m = 'sendWith' @('Control.Effect.Reader.Reader' r)
+--   --   ('Control.Effect.Reader.local' f ('runEffT' m))
+--   --   ('liftWith' '$' \\lower -> 'Control.Effect.Reader.local' f (lower '$' 'runEffT' m))
+--   -- @
+--   --
+--   -- With this instance in place, @'Control.Effect.Reader.Reader' r@ can automatically be used with
+--   -- @'EffT' t m a@. Transformers that can handle the @'Control.Effect.Reader.Reader' r@ effect
+--   -- (i.e. ones for which @'Handles' t ('Control.Effect.Reader.Reader' r) ~ ''True'@) will use their
+--   -- @'Control.Effect.Reader.Reader' r@ instances, while other transformers will delegate to the
+--   -- underlying monad.
+--   sendWith
+--     :: DeclaredTactics eff
+--     => (eff (t m) => t m a)
+--     -- ^ An action to run in the current handler.
+--     -> ((All (RequiredTactics eff) t, eff m) => t m a)
+--     -- ^ An action that delegates to the underlying monad.
+--     -> EffT t m a
 
-class Send eff t m => SendWith eff t m where
-  -- | Constructs an @'EffT' t m a@ computation for a higher-order/scoped effect @eff@ from two
-  -- actions:
-  --
-  --   1. A “run” action, which executes the effect in the @(t m)@ monad given @(t m)@ has an
-  --      instance of @eff@.
-  --
-  --   2. A “lift” action, which lifts the effect through @(t m)@ into @m@ given that @t@ has a
-  --      'Handler' instance and @m@ has an instance of @eff@.
-  --
-  -- Each higher-order method in the 'EffT' instance for a given effect should use 'sendWith' to
-  -- specify how it ought to be lifted through effect handlers. For example, the definition of
-  -- 'Control.Effect.Reader.local' looks like this:
-  --
-  -- @
-  -- 'Control.Effect.Reader.local' f m = 'sendWith' @('Control.Effect.Reader.Reader' r)
-  --   ('Control.Effect.Reader.local' f ('runEffT' m))
-  --   ('liftWith' '$' \\lower -> 'Control.Effect.Reader.local' f (lower '$' 'runEffT' m))
-  -- @
-  --
-  -- With this instance in place, @'Control.Effect.Reader.Reader' r@ can automatically be used with
-  -- @'EffT' t m a@. Transformers that can handle the @'Control.Effect.Reader.Reader' r@ effect
-  -- (i.e. ones for which @'Handles' t ('Control.Effect.Reader.Reader' r) ~ ''True'@) will use their
-  -- @'Control.Effect.Reader.Reader' r@ instances, while other transformers will delegate to the
-  -- underlying monad.
-  sendWith
-    :: DeclaredTactics eff
-    => (eff (t m) => t m a)
-    -- ^ An action to run in the current handler.
-    -> ((All (RequiredTactics eff) t, eff m) => t m a)
-    -- ^ An action that delegates to the underlying monad.
-    -> EffT t m a
-
-instance
-  ( Send eff t m
-  , DeclaredTactics eff
-  , Handle (Handles t eff) eff (RequiredTactics eff) t m
-  ) => SendWith eff t m where
-  sendWith = handle @(Handles t eff) @eff @(RequiredTactics eff)
-  {-# INLINE sendWith #-}
+-- instance
+--   ( Send eff t m
+--   , DeclaredTactics eff
+--   , Handle (Handles t eff) eff (RequiredTactics eff) t m
+--   ) => SendWith eff t m where
+--   sendWith = handle @(Handles t eff) @eff @(RequiredTactics eff)
+--   {-# INLINE sendWith #-}
 
 type family All (cs :: [k -> Constraint]) (a :: k) :: Constraint where
   All '[]       _ = ()
