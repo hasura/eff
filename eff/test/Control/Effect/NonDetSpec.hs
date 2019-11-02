@@ -1,9 +1,11 @@
 module Control.Effect.NonDetSpec (spec) where
 
+import qualified Control.Effect.NonDet as NonDet
+
 import Control.Applicative
 import Control.Effect
 import Control.Effect.Error
-import Control.Effect.NonDet
+import Control.Effect.NonDet (NonDetT)
 import Control.Effect.Reader
 import Control.Effect.Writer
 import Data.Functor.Identity
@@ -12,12 +14,12 @@ import Test.Hspec
 spec :: Spec
 spec = describe "interaction with scoped effects" $ do
   specify "choice inside scoped operations" $ do
-    let results = runIdentity $ runReader True $ runNonDetAll $
+    let results = runIdentity $ runReader True $ NonDet.runAll $
           ask <|> local not (ask <|> ask) <|> ask
     results `shouldBe` [True, False, False, True]
 
   specify "choice inside scoped operations with multiple continuations" $ do
-    let results = runIdentity $ runError @() $ runNonDetAll $ do
+    let results = runIdentity $ runError @() $ NonDet.runAll $ do
           b <- (pure True <|> throw ()) `catch` \() -> pure False
           pure $ not b
     results `shouldBe` Right [False, True]
@@ -30,7 +32,7 @@ spec = describe "interaction with scoped effects" $ do
                 | m < n     = xs >>= ($ m)
                 | otherwise = pure []
               go x xs = pure $ \m -> (x :) <$> next (m + 1) xs
-          in next 0 . foldrNonDet go (pure $ \_ -> pure [])
+          in next 0 . NonDet.foldr go (pure $ \_ -> pure [])
 
         results = runIdentity $ runWriter @[String] $ runReader True $ takeNonDet 6 $ do
           x <- ask <|> local not
