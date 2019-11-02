@@ -21,7 +21,6 @@ import qualified Control.Exception as IO
 import qualified Control.Monad.Trans.Except as Trans
 
 import Control.Effect.Internal
-import Control.Effect.State
 import Control.Handler.Internal
 import Control.Monad.Trans.Except (ExceptT(..), runExceptT)
 import Control.Monad.Trans.Reader (ReaderT(..), runReaderT)

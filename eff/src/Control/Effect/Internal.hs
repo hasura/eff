@@ -17,7 +17,6 @@ import Data.Coerce
 import Data.Kind (Constraint, Type)
 import Data.Type.Coercion
 import GHC.Generics (Generic, Generic1)
--- import GHC.TypeLits (TypeError, ErrorMessage(..))
 
 import Control.Handler.Internal
 
@@ -205,61 +204,6 @@ class (Handler t, Monad m) => Send eff t m where
 instance (Handler t, Monad m, Handle (Handles t eff) eff t m) => Send eff t m where
   send m = EffT (handle @(Handles t eff) @eff m)
   {-# INLINE send #-}
-
--- type family RequiredTactics (eff :: EffectK) :: [TacticK]
--- type family DeclaredTactics eff where
---   DeclaredTactics eff = NotStuck (RequiredTactics eff) (TypeError (
---     'Text "Missing a RequiredTactics declaration for ‘" ':<>: 'ShowType eff ':<>: 'Text "’"
---     ':$$: 'Text "  " ':<>:
---     ( 'Text "(Probable fix: add a declaration of the form"
---       ':$$: 'Text "   type instance " ':<>: 'ShowType (RequiredTactics eff) ':<>: 'Text " = '[...]"
---       ':$$: 'Text " alongside the ‘" ':<>: 'ShowType eff ':<>: 'Text "’ instance for EffT.)" )))
---
--- data family Skolem k :: k
--- type family NotStuck (t :: k) err :: Constraint where
---   NotStuck (Skolem k) _ = TypeError ('Text "Internal error: NotStuck instance for Skolem was selected!")
---   NotStuck _          _ = ()
-
--- class Send eff t m => SendWith eff t m where
---   -- | Constructs an @'EffT' t m a@ computation for a higher-order/scoped effect @eff@ from two
---   -- actions:
---   --
---   --   1. A “run” action, which executes the effect in the @(t m)@ monad given @(t m)@ has an
---   --      instance of @eff@.
---   --
---   --   2. A “lift” action, which lifts the effect through @(t m)@ into @m@ given that @t@ has a
---   --      'Handler' instance and @m@ has an instance of @eff@.
---   --
---   -- Each higher-order method in the 'EffT' instance for a given effect should use 'sendWith' to
---   -- specify how it ought to be lifted through effect handlers. For example, the definition of
---   -- 'Control.Effect.Reader.local' looks like this:
---   --
---   -- @
---   -- 'Control.Effect.Reader.local' f m = 'sendWith' @('Control.Effect.Reader.Reader' r)
---   --   ('Control.Effect.Reader.local' f ('runEffT' m))
---   --   ('liftWith' '$' \\lower -> 'Control.Effect.Reader.local' f (lower '$' 'runEffT' m))
---   -- @
---   --
---   -- With this instance in place, @'Control.Effect.Reader.Reader' r@ can automatically be used with
---   -- @'EffT' t m a@. Transformers that can handle the @'Control.Effect.Reader.Reader' r@ effect
---   -- (i.e. ones for which @'Handles' t ('Control.Effect.Reader.Reader' r) ~ ''True'@) will use their
---   -- @'Control.Effect.Reader.Reader' r@ instances, while other transformers will delegate to the
---   -- underlying monad.
---   sendWith
---     :: DeclaredTactics eff
---     => (eff (t m) => t m a)
---     -- ^ An action to run in the current handler.
---     -> ((All (RequiredTactics eff) t, eff m) => t m a)
---     -- ^ An action that delegates to the underlying monad.
---     -> EffT t m a
-
--- instance
---   ( Send eff t m
---   , DeclaredTactics eff
---   , Handle (Handles t eff) eff (RequiredTactics eff) t m
---   ) => SendWith eff t m where
---   sendWith = handle @(Handles t eff) @eff @(RequiredTactics eff)
---   {-# INLINE sendWith #-}
 
 type family All (cs :: [k -> Constraint]) (a :: k) :: Constraint where
   All '[]       _ = ()

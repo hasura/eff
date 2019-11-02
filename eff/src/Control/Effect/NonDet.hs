@@ -1,6 +1,13 @@
 {-# LANGUAGE UndecidableInstances #-}
 
-module Control.Effect.NonDet where
+module Control.Effect.NonDet
+  ( Alternative(..)
+  , NonDetT(..)
+  , runNonDetAll
+  , runNonDetFirst
+  , foldlNonDet
+  , foldrNonDet
+  ) where
 
 import Control.Applicative
 import Control.Effect.Internal
