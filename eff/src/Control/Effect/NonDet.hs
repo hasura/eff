@@ -3,34 +3,39 @@
 module Control.Effect.NonDet where
 
 import Control.Applicative
+import Control.Effect.Internal
+import Control.Handler.Internal
 import Control.Monad
 import Control.Monad.Base
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Control.Handler.Internal
 import Data.Functor
 
 newtype NonDetT m a = NonDetT { runNonDetT :: m (Maybe (a, NonDetT m a)) }
   deriving (Functor)
 
-runNonDetAll :: (Monad m, Alternative f) => NonDetT m a -> m (f a)
+type instance Handles NonDetT eff = eff == Alternative
+
+runNonDetAll :: (Monad m, Alternative f) => EffT NonDetT m a -> m (f a)
 runNonDetAll = foldlNonDet (\a b -> pure (a <|> pure b)) empty
 {-# INLINABLE runNonDetAll #-}
 
-runNonDetFirst :: (Monad m, Alternative f) => NonDetT m a -> m (f a)
+runNonDetFirst :: (Monad m, Alternative f) => EffT NonDetT m a -> m (f a)
 runNonDetFirst = foldrNonDet (\x _ -> pure (pure x)) (pure empty)
 {-# INLINABLE runNonDetFirst #-}
 
-foldlNonDet :: Monad m => (b -> a -> m b) -> b -> NonDetT m a -> m b
-foldlNonDet f b (NonDetT ma) = ma >>= \case
-  Nothing       -> pure b
-  Just (a, ma') -> f b a >>= \(!b') -> foldlNonDet f b' ma'
+foldlNonDet :: Monad m => (b -> a -> m b) -> b -> EffT NonDetT m a -> m b
+foldlNonDet f b0 ma0 = loop b0 (runEffT ma0) where
+  loop b ma = runNonDetT ma >>= \case
+    Nothing       -> pure b
+    Just (a, ma') -> f b a >>= \(!b') -> loop b' ma'
 {-# INLINABLE foldlNonDet #-}
 
-foldrNonDet :: Monad m => (a -> m b -> m b) -> m b -> NonDetT m a -> m b
-foldrNonDet f mb (NonDetT ma) = ma >>= \case
-  Nothing       -> mb
-  Just (a, ma') -> f a (foldrNonDet f mb ma')
+foldrNonDet :: Monad m => (a -> m b -> m b) -> m b -> EffT NonDetT m a -> m b
+foldrNonDet f mb ma0 = loop (runEffT ma0) where
+  loop ma = runNonDetT ma >>= \case
+    Nothing       -> mb
+    Just (a, ma') -> f a (loop ma')
 {-# INLINABLE foldrNonDet #-}
 
 instance Monad m => Semigroup (NonDetT m a) where

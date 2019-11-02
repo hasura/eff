@@ -58,6 +58,7 @@ test-suite eff-tests
   main-is: Main.hs
   other-modules:
     Control.Effect.Examples.FileSystemSpec
+    Control.Effect.NonDetSpec
     Control.Effect.ResourceSpec
 
   build-depends:
