@@ -1,3 +1,4 @@
 module Control.Effect.Error where
-import Data.Kind (Type)
-class Error e (m :: Type -> Type)
+class Monad m => Error e m where
+  throw :: e -> m a
+  catch :: m a -> (e -> m a) -> m a

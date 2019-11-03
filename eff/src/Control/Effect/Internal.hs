@@ -1,6 +1,7 @@
 {-# OPTIONS_HADDOCK not-home #-}
 
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UndecidableSuperClasses #-}
@@ -20,9 +21,21 @@ import GHC.Generics (Generic, Generic1)
 
 import Control.Handler.Internal
 
+#ifdef __HADDOCK_VERSION__
+import {-# SOURCE #-} Control.Effect.Error
+#endif
+
 -- | The kind of effects, which are classes of monads.
 type EffectK = (Type -> Type) -> Constraint
 
+-- | A “monad transformer transformer” that can be used to lift actions through an arbitrary monad
+-- transformer. @('LiftT' t m a)@ is representationally identical to @(t m a)@, but it provides a
+-- different set of instances that unconditionally defer to the underlying monad.
+--
+-- Using 'LiftT' directly is not usually very useful, but it is used automatically by 'EffT' as part
+-- of its auto-lifting machinery. All effect classes must provide an instance for 'LiftT' that
+-- defines how to lift actions through arbitrary handlers, as that instance will be used by 'EffT'
+-- whenever a handler does not implement a particular effect.
 newtype LiftT (t :: HandlerK) m a = LiftT { runLiftT :: t m a }
   deriving newtype (Functor, Applicative, Monad, MonadTrans)
 
@@ -66,19 +79,35 @@ instance (Alternative m, Monad m, Choice t) => Alternative (LiftT t m) where
 
 instance (Alternative m, Monad m, Choice t) => MonadPlus (LiftT t m)
 
--- | A monad transformer for handling effects. @('EffT' t)@ is actually no different from @t@ at
--- runtime, but it provides a different set of instances. Wrapping a monad transformer with 'EffT'
--- allows other effects to be automatically lifted through it, provided the underlying transformer
--- provides a 'Handler' instance.
+instance (MonadIO m, MonadTrans t, Monad (t m)) => MonadIO (LiftT t m) where
+  liftIO = lift . liftIO
+  {-# INLINE liftIO #-}
+
+instance (MonadBase b m, MonadTrans t, Monad (t m)) => MonadBase b (LiftT t m) where
+  liftBase = lift . liftBase
+  {-# INLINE liftBase #-}
+
+-- | A “monad transformer transformer” for handling effects. Wrapping a monad transformer with
+-- 'EffT' allows other effects to be automatically lifted through it by automatically choosing
+-- between an effect instance defined on the transformer or an effect instance defined on 'LiftT'
+-- depending on whether or not the transformer can handle the given effect, as determined by the
+-- 'Handles' type family.
 --
--- 'EffT' cannot be used with any arbitrary monad transformer: all monad transformers wrapped with
--- 'EffT' /must/ provide an instance of the 'Handles' type family to cooperate with effect with the
--- effect lifting machinery. However, note that this requirement only applies to transformers
--- wrapped in 'EffT' directly, i.e. used as the @t@ argument in @('EffT' t)@; there are no
--- restrictions placed on the underlying monad (though effects will not be able to be automatically
--- lifted through non-'EffT' layers).
+-- When defining new effects or handlers, the following instances must be defined to cooperate with
+-- 'EffT'’s effect lifting machinery:
+--
+--   * Effect classes must provide an instance for 'LiftT' that define how the effect ought to be
+--     lifted through handlers, and they must also provide an instance for 'EffT' using 'Send' to
+--     defer to the appropriate instance.
+--
+--   * Handler monad transformers must provide an instance of the 'Handles' type family to specify
+--     which effects they do and do not handle.
+--
+-- The other details of delegating to the appropriate handler for each effect are handled
+-- automatically.
 newtype EffT (t :: HandlerK) m a = EffT { runEffT :: t m a }
   deriving newtype (Functor, Applicative, Monad, MonadTrans)
+  deriving (MonadIO, MonadBase b) via LiftT t m
 
 instance Handler t => Handler (EffT t) where
   newtype HandlerState (EffT t) m r a = EffTState { runEffTState :: HandlerState t m r a }
@@ -119,14 +148,6 @@ instance (Send Alternative t m, Monad (t m)) => Alternative (EffT t m) where
   {-# INLINE (<|>) #-}
 
 instance (Send Alternative t m, Monad (t m)) => MonadPlus (EffT t m)
-
-instance (MonadIO m, MonadTrans t, Monad (t m)) => MonadIO (EffT t m) where
-  liftIO = lift . liftIO
-  {-# INLINE liftIO #-}
-
-instance (MonadBase b m, MonadTrans t, Monad (t m)) => MonadBase b (EffT t m) where
-  liftBase = lift . liftBase
-  {-# INLINE liftBase #-}
 
 -- | A type alias for a stack of nested 'EffT' transformers: @'EffsT' '[t1, t2, ..., tn] m@ is
 -- equivalent to @'EffT' t1 ('EffT' t2 (... ('EffT' tn m) ...))@.
@@ -181,16 +202,19 @@ instance
 -- @
 --
 -- where @/eff/@ is replaced by the actual effect in question. Each method should be implemented
--- using 'send' or 'sendWith': 'send' for algebraic/first-order operations and 'sendWith' for
--- scoped/higher-order ones.
+-- using 'send' (in a purely mechanical way), which defines the method in terms of 'EffT'’s
+-- automatic lifting machinery.
 --
 -- There is no need to define any additional instances of this class.
 class (Handler t, Monad m) => Send eff t m where
-  -- | Constructs an @'EffT' t m a@ computation for an algebraic/first-order operation. Each
-  -- first-order method in the 'EffT' instance for a given effect should have the shape
+  -- | Lifts an effect operation into 'EffT' using 'EffT'’s automatic lifting machinery. Each
+  -- method in the 'EffT' instance for a given effect should use 'send' to defer to an instance on
+  -- the appropriate handler.
+  --
+  -- Each method defined using 'send' should have roughly the following shape:
   --
   -- @
-  -- /method/ /a/ /b/ /c/ = 'send' \@/eff/ (/method/ /a/ /b/ /c/)
+  -- /method/ /a/ /b/ /c/ = 'send' \@/eff/ '$' /method/ /a/ /b/ /c/
   -- @
   --
   -- where @/method/ /a/ /b/ /c/@ should be replaced with the method and its arguments, and @/eff/@
@@ -198,7 +222,34 @@ class (Handler t, Monad m) => Send eff t m where
   -- because @eff@ only appears in a constraint in the type signature for 'send', which GHC cannot
   -- automatically infer.
   --
-  -- @'send' \@/eff/ /m/@ is equivalent to @'sendWith' \@/eff/ /m/ ('lift' /m/)@.
+  -- For first-order effects, where @m@ does not appear anywhere in the types of the method
+  -- arguments, the above shape is sufficient, and the arguments can be passed to /method/ as-is.
+  -- However, for higher-order effects, uses of 'coerce' must be inserted as necessary to safely
+  -- coerce the method arguments into the underlying monad. For example, the 'Error' instance for
+  -- 'EffT' looks like the following:
+  --
+  -- @
+  -- instance 'Send' ('Error' e) t m => 'Error' e ('EffT' t m) where
+  --   'throw' e = 'send' @('Error' e) '$' 'throw' e
+  --   'catch' m f = 'send' @('Error' e) '$' 'catch' ('coerce' m) ('coerce' . f)
+  -- @
+  --
+  -- __Note__: it is extremely important to /not/ use 'coerce' around the method result, only around
+  -- its arguments. For example, the following definition of 'catch' would typecheck, but it is
+  -- incorrect:
+  --
+  -- @
+  -- 'catch' m f = 'send' @('Error' e) '$' 'coerce' ('catch' m f)
+  -- @
+  --
+  -- The problem with the above definition is that it is recursive—it is no different from writing
+  --
+  -- @
+  -- 'catch' m f = 'catch' m f
+  -- @
+  --
+  -- which also typechecks, but is an infinite loop. Therefore, be sure to only apply 'coerce' to
+  -- the method arguments, not its result.
   send :: (forall n. (eff n, Coercible (EffT t m) n) => n a) -> EffT t m a
 
 instance (Handler t, Monad m, Handle (Handles t eff) eff t m) => Send eff t m where
