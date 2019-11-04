@@ -8,6 +8,8 @@ import Control.Effect.Error
 import Control.Effect.NonDet (NonDetT)
 import Control.Effect.Reader
 import Control.Effect.Writer
+import Data.Monoid (Sum(..))
+import Data.Functor
 import Data.Functor.Identity
 import Test.Hspec
 
@@ -23,6 +25,21 @@ spec = describe "interaction with scoped effects" $ do
           b <- (pure True <|> throw ()) `catch` \() -> pure False
           pure $ not b
     results `shouldBe` Right [False, True]
+
+  describe "listen over (<|>)" $ do
+    let go :: (Alternative m, Writer (Sum Integer) m) => m ((Sum Integer), Bool)
+        go = listen (add 1 $> True <|> add 2 $> False)
+          where add = tell . Sum @Integer
+
+    context "Writer has local semantics relative to Alternative" $ do
+      it "returns output from each choice" $ do
+        let results = runIdentity $ NonDet.runAll $ runWriter @(Sum Integer) go
+        results `shouldBe` [(Sum 1, (Sum 1, True)), (Sum 2, (Sum 2, False))]
+
+    context "Writer has global semantics relative to Alternative" $ do
+      it "returns output from each choice" $ do
+        let results = runIdentity $ runWriter @(Sum Integer) $ NonDet.runAll go
+        results `shouldBe` (Sum 3, [(Sum 1, True), (Sum 2, False)])
 
   specify "lazy fold with scoped operations" $ do
     let takeNonDet :: forall m a. Monad m => Integer -> EffT NonDetT m a -> m [a]
