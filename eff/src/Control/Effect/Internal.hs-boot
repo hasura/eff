@@ -7,7 +7,9 @@ import Data.Kind (Constraint, Type)
 
 type EffectK = (Type -> Type) -> Constraint
 
-newtype EffT t (m :: Type -> Type) a = EffT { runEffT :: t m a }
+newtype LiftT (t :: HandlerK) m a = LiftT { runLiftT :: t m a }
+
+newtype EffT (t :: HandlerK) m a = EffT { runEffT :: t m a }
 instance Functor (t m) => Functor (EffT t m)
 instance Applicative (t m) => Applicative (EffT t m)
 instance Monad (t m) => Monad (EffT t m)

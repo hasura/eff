@@ -1,6 +1,7 @@
 {-# OPTIONS_HADDOCK not-home #-}
 
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -30,21 +31,188 @@ import {-# SOURCE #-} Control.Effect.Internal
 import {-# SOURCE #-} Control.Effect.Reader
 import {-# SOURCE #-} Control.Effect.State
 
+#ifdef __HADDOCK_VERSION__
+import Data.Functor
+
+import {-# SOURCE #-} Control.Effect.NonDet
+import {-# SOURCE #-} Control.Effect.Writer
+#endif
+
 -- | The kind of effect handlers, which are monad transformers.
 type HandlerK = (Type -> Type) -> Type -> Type
 -- | The kind of lifting tactics, which are classes on monad transformers.
 type TacticK = HandlerK -> Constraint
 
--- | The class of effect handlers. You do not need to implement any instances of this class yourself
--- if you define your effect handlers in terms of existing handlers using 'HandlerT'. However, if
--- you want to implement your own “primitive” handlers, you must define an instance of this class.
+-- | The class of effect handlers, which satisfy the following properties:
+--
+--   * All handlers are monad transformers, which means they must have an instance of the usual
+--     'MonadTrans' typeclass. Additionally, this class also adds a quantified
+--     @forall m. 'Monad' m => 'Monad' (t m)@ superclass, as at the time of this writing, no such
+--     superclass is provided by 'MonadTrans' (though morally it ought to be).
+--
+--   * Furthermore, 'Handler' imposes the additional constraint that all handlers form functors
+--     whenever their argument is a functor (but not necessarily a monad). This is almost always the
+--     case for all monad transformers, anyway, so 'Handler' just makes the constraint explicit.
+--
+--   * Finally, all handlers must support the 'hmap' operation for lifting higher-order operations
+--     in the base monad into the transformed monad, which is used to lift simple higher-order
+--     effect operations.
+--
+-- You do __not__ need to implement any instances of this class yourself if you define your effect
+-- handlers in terms of existing handlers using 'HandlerT'. However, if you want to implement your
+-- own “primitive” handlers, you must define an instance of this class and instances of as many of
+-- the classes exported by "Control.Handler.Tactics" as your handler supports.
 class
   ( MonadTrans t
   , forall m. Functor m => Functor (t m)
   , forall m. Monad m => Monad (t m)
   , forall m r. Functor (HandlerState t m r)
   ) => Handler t where
+  -- | A data family that represents the additional information added to the result of some
+  -- computation by the handler @t@.
+  --
+  -- ==== The basics
+  --
+  -- In most cases, the @m@ and @r@ type arguments are completely unused, so you may usually ignore
+  -- them and instead think of @('HandlerState' t m r a)@ as if it were a simpler type,
+  -- @('HandlerState' t a)@. Indeed, @('HandlerState' t m r)@ must be a 'Functor'
+  -- /regardless of the types used for @m@ and @r@,/ which places a strong restriction on the way
+  -- @m@ may be used in instances of 'HandlerState'.
+  --
+  -- A value of type @(m ('HandlerState' t m r a))@ is almost (though not completely) isomorphic to
+  -- a value of type @(t m a)@: it encapsulates the additional information added to @m@ by @t@. For
+  -- example:
+  --
+  --   * @('HandlerState' ('Strict.StateT' s) m r a)@ is representationally equivalent to a
+  --     tuple of type @(a, s)@—it combines the result of an action with the resulting state.
+  --
+  --   * @('HandlerState' ('ExceptT' e) m r a)@ is representationally equivalent to
+  --     @('Either' e a)@—it extends the result with the possibility of failing with an error.
+  --
+  -- Note that the latter example illustrates that a value of type @('HandlerState' t m r a)@ might
+  -- not always actually contain an @a@!
+  --
+  -- ==== The gory details
+  --
+  -- Generally, ignoring the @m@ and @r@ type parameters is fine, so you probably /do not/ need to read
+  -- any further! However, if you are implementing a particularly sophisticated effect handler from scratch,
+  -- you may find all the gory details useful. Here is a full explanation:
+  --
+  --   * If a handler only has a single continuation (and most do), @m@ and @r@ should be completely
+  --     ignored, and the above explanation applies.
+  --
+  --   * However, if a handler has multiple continuations, @m@ and @r@ must be used: @m@ represents
+  --     the type of the base monad for each additional continuation, and @r@ represents the type of
+  --     each continuation’s result, whereas @a@ is only used to represent the type of the /first/
+  --     continuation’s result.
+  --
+  -- The above explanation is probably still a little opaque, so the remainder of this section
+  -- provides an example. The canonical example of a handler with multiple continuations is
+  -- 'NonDetT', which has the following representation:
+  --
+  -- @
+  -- newtype 'NonDetT' m a = 'NonDetT' { 'runNonDetT' :: m ('Maybe' (a, 'NonDetT' m a)) }
+  -- @
+  --
+  -- Note that the type of the base monad, @m@, appears /inside/ the result of a 'NonDetT'
+  -- computation, since it holds the next branch of the computation. Therefore, @m@ must be bound on
+  -- the left-hand side of the definition for @'HandlerState' 'NonDetT'@, which explains its
+  -- presence in the type. However, that still does not explain the purpose of @r@.
+  --
+  -- To motivate @r@, consider the following hypothetical instance of 'HandlerState' for 'NonDetT'
+  -- that omits the @r@ type parameter:
+  --
+  -- @
+  -- newtype 'HandlerState' 'NonDetT' m a = NonDetTState { runNonDetTState :: 'Maybe' (a, 'NonDetT' m a) }
+  -- @
+  --
+  -- This type has a problem. To see it, consider an operation like 'listen' from the 'Writer'
+  -- effect, which extends the result with some extra information:
+  --
+  -- @
+  -- 'listen' :: 'Writer' w m => m a -> m (w, a)
+  -- @
+  --
+  -- When 'listen' is applied to an argument of type @(m ('HandlerState' 'NonDetT' m a))@, it will
+  -- receive a result of type @(m (w, ('HandlerState' 'NonDetT' m a)))@. At that point, the caller
+  -- would like to use 'fmap' to convert that result into @(m ('HandlerState' 'NonDetT' m (w, a)))@
+  -- so that it may be used with 'hmap':
+  --
+  -- @
+  -- 'listen' = 'hmap' (\\m -> 'listen' m '<&>' \\(w, a) -> (w,) '<$>' a)
+  -- @
+  --
+  -- At this point, our hands are unfortunately tied to a 'Functor' instance that does the wrong
+  -- thing: we have to apply @(w,)@ to /every/ occurrence of @a@ in the result, producing a value of
+  -- type @('Maybe' ((w, a), 'NonDetT' m (w, a)))@, but that is incorrect! That associates the
+  -- /same/ value for @w@ with /all/ the continuations, even though each branch might theoretically
+  -- produce a different result. To make that more concrete, consider the following expression:
+  --
+  -- @
+  -- 'listen' (/a/ '<|>' /b/)
+  -- @
+  --
+  -- If '<|>' is handled by 'NonDetT', 'listen' ought to distribute over the arguments to '<|>',
+  -- leading to the following expression:
+  --
+  -- @
+  -- 'listen' /a/ '<|>' 'listen' /b/
+  -- @
+  --
+  -- However, in the above example, 'listen' would only be executed /once/, and its result would be
+  -- used for all future branches, making the behavior actually equivalent to this expression:
+  --
+  -- @
+  -- do (w, x) <- 'listen' /a/
+  --    'pure' (w, x) '<|>' ((w,) '<$>' /b/)
+  -- @
+  --
+  -- That is not at all what we want! The solution is to introduce the extra @r@ parameter, then
+  -- modify the definition of 'HandlerState' for 'NonDetT' to the following:
+  --
+  -- @
+  -- newtype 'HandlerState' 'NonDetT' m r a = NonDetTState { runNonDetTState :: 'Maybe' (a, 'NonDetT' m r) }
+  -- @
+  --
+  -- Note that @a@ now /only/ appears as the result type for the first branch of the computation,
+  -- and the other branches have type @r@. Indeed, the @r@ type represents the “original result
+  -- type” for some computation, which allows it to be unaffected by 'fmap'. This is visible in the
+  -- type of the second argument to 'hmap':
+  --
+  -- @
+  -- m ('HandlerState' t m a a) -> n ('HandlerState' t m a b)
+  -- @
+  --
+  -- In the argument, @r@ and @a@ are fixed to the same type, @a@. However, although @a@ changes to
+  -- @b@ in the result, @r@ remains the same. This means the resulting
+  -- @n ('HandlerState' 'NonDetT' m a b)@ value has the following representation:
+  --
+  -- @
+  -- n ('Maybe' (b, 'NonDetT' m a))
+  -- @
+  --
+  -- Crucially, the type of the continuation has been left completely unchanged, and it has the same
+  -- type as the original argument, @('NonDetT' m a)@. This means the second argument to 'hmap' can
+  -- be applied a second time to the continuation for the second branch (and again and again
+  -- recursively, until the result is 'Nothing'), distributing the call to 'listen' over every
+  -- branch of the computation.
   data HandlerState t (m :: Type -> Type) r a
+
+  -- | Lifts a higher-order operation in the base monad to one in the transformed monad. The
+  -- operation in the base monad must be at least somewhat polymorphic in order to support threading
+  -- the 'HandlerState' result through it, but it does not need to be a full natural transformation,
+  -- as @('HandlerState' t m r)@ is guaranteed to be a functor.
+  --
+  -- Examples of operations that may be lifted with 'hmap' are 'local' and 'listen', which have the
+  -- following 'LiftT' implementations:
+  --
+  -- @
+  -- instance ('Handler' t, 'Reader' r m) => 'Reader' r ('LiftT' t m) where
+  --   'local' f = 'hmap' ('local' f)
+  --
+  -- instance ('Handler' t, 'Writer' w m) => 'Writer' w ('LiftT' t m) where
+  --   'listen' = 'hmap' (\\m -> 'listen' m '<&>' \\(w, a) -> (w,) '<$>' a)
+  -- @
   hmap
     :: (Functor m, Functor n)
     => (m (HandlerState t m a a) -> n (HandlerState t m a b))

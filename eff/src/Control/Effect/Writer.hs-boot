@@ -1,3 +1,5 @@
 module Control.Effect.Writer where
-import Data.Kind (Type)
-class Writer w (m :: Type -> Type)
+class (Monoid w, Monad m) => Writer w m where
+  tell :: w -> m ()
+  listen :: m a -> m (w, a)
+  censor :: (w -> w) -> m a -> m a
