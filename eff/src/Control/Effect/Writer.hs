@@ -27,9 +27,10 @@ import Data.Functor
 --
 -- Instances should obey the following laws:
 --
---   * @'tell' /x/ '*>' 'tell' /y/ ≡ 'tell' (/x/ '<>' /y/)@
---   * @'listen' ('tell' /x/) ≡ (/x/,) '<$>' 'tell' /x/@
---   * @'censor' /f/ ('tell' /x/) ≡ 'tell' (/f/ /x/)@
+--   * @'tell' /x/ '*>' 'tell' /y/@ ≡ @'tell' (/x/ '<>' /y/)@
+--   * @'listen' ('tell' /x/)@ ≡ @(/x/,) '<$>' 'tell' /x/@
+--   * @'censor' /f/ ('tell' /x/)@ ≡ @'tell' (/f/ /x/)@
+--   * @('censor' ('const' 'mempty') ('listen' /e/) '>>=' \\(w, a) -> 'tell' w '$>' a)@ ≡ @/e/@
 class (Monoid w, Monad m) => Writer w m where
   -- | Appends the given value to the current output.
   tell :: w -> m ()
