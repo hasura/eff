@@ -229,13 +229,24 @@ class Handler t => Scoped t where
     -> (c -> t m a) -> t n b
 
 class Handler t => Choice t where
-  choice
-    :: Functor m
-    => t m a -> (m (HandlerState t m a a) -> t m a)
-    -- ^ Make a choice by extending the continuation.
-    -> ((t m a -> m (HandlerState t m a a)) -> m (HandlerState t m a a))
-    -- ^ Make a choice via state threading.
-    -> t m a
+  choice :: Functor m => t m a -> (m (HandlerState t m a a) -> t m a) -> t m a
+
+-- | Creates an implementation of @choice@ given a function (@interpreterBasedChoice@) that takes a
+-- body that takes a first-class interpreter function (@run@).
+choiceGivenInterpreterBasedChoice
+  :: Handler t
+  =>
+    (forall m a. Functor m
+    => ((t m a -> m (HandlerState t m a a)) -> m (HandlerState t m a a))
+    -> t m a)
+  ->
+    (forall m a. Functor m
+    => t m a
+    -> (m (HandlerState t m a a) -> t m a)
+    -> t m a)
+choiceGivenInterpreterBasedChoice interpreterBasedChoice interactions handleInteraction =
+  interpreterBasedChoice $ \run ->
+    run $ hmap (run . handleInteraction) interactions
 
 instance Handler IdentityT where
   newtype HandlerState IdentityT m r a = IdentityTState { runIdentityTState :: a }
@@ -246,7 +257,8 @@ instance Scoped IdentityT where
   scoped f _ k = IdentityT $ runIdentityTState <$> f (fmap IdentityTState . runIdentityT . k)
   {-# INLINABLE scoped #-}
 instance Choice IdentityT where
-  choice _ _ f = IdentityT $ runIdentityTState <$> f (fmap IdentityTState . runIdentityT)
+  choice = choiceGivenInterpreterBasedChoice $ \f ->
+    IdentityT $ runIdentityTState <$> f (fmap IdentityTState . runIdentityT)
   {-# INLINABLE choice #-}
 
 instance Handler (ReaderT r) where
@@ -258,7 +270,8 @@ instance Scoped (ReaderT r) where
   scoped f _ k = ReaderT $ \r -> runReaderTState <$> f (fmap ReaderTState . flip runReaderT r . k)
   {-# INLINABLE scoped #-}
 instance Choice (ReaderT r) where
-  choice _ _ f = ReaderT $ \r -> runReaderTState <$> f (fmap ReaderTState . flip runReaderT r)
+  choice = choiceGivenInterpreterBasedChoice $ \f ->
+    ReaderT $ \r -> runReaderTState <$> f (fmap ReaderTState . flip runReaderT r)
   {-# INLINABLE choice #-}
 
 instance Handler (ExceptT e) where
@@ -270,7 +283,8 @@ instance Scoped (ExceptT e) where
   scoped f _ k = ExceptT $ runExceptTState <$> f (fmap ExceptTState . runExceptT . k)
   {-# INLINABLE scoped #-}
 instance Choice (ExceptT e) where
-  choice _ _ f = ExceptT $ runExceptTState <$> f (fmap ExceptTState . runExceptT)
+  choice = choiceGivenInterpreterBasedChoice $ \f ->
+    ExceptT $ runExceptTState <$> f (fmap ExceptTState . runExceptT)
   {-# INLINABLE choice #-}
 
 newtype Flip p a b = Flip { unFlip :: p b a }
@@ -288,8 +302,9 @@ instance Scoped (Lazy.StateT s) where
     runLazyStateTState <$> f (fmap LazyStateTState . flip Lazy.runStateT s . k)
   {-# INLINABLE scoped #-}
 instance Choice (Lazy.StateT s) where
-  choice _ _ f = Lazy.StateT $ \s ->
-    runLazyStateTState <$> f (fmap LazyStateTState . flip Lazy.runStateT s)
+  choice = choiceGivenInterpreterBasedChoice $ \f ->
+    Lazy.StateT $ \s ->
+      runLazyStateTState <$> f (fmap LazyStateTState . flip Lazy.runStateT s)
   {-# INLINABLE choice #-}
 
 instance Handler (Strict.StateT s) where
@@ -302,8 +317,9 @@ instance Scoped (Strict.StateT s) where
     runStrictStateTState <$> f (fmap StrictStateTState . flip Strict.runStateT s . k)
   {-# INLINABLE scoped #-}
 instance Choice (Strict.StateT s) where
-  choice _ _ f = Strict.StateT $ \s ->
-    runStrictStateTState <$> f (fmap StrictStateTState . flip Strict.runStateT s)
+  choice = choiceGivenInterpreterBasedChoice $ \f ->
+    Strict.StateT $ \s ->
+      runStrictStateTState <$> f (fmap StrictStateTState . flip Strict.runStateT s)
   {-# INLINABLE choice #-}
 
 instance Monoid w => Handler (Lazy.WriterT w) where
@@ -316,8 +332,9 @@ instance Monoid w => Scoped (Lazy.WriterT w) where
     runLazyWriterTState <$> f (fmap LazyWriterTState . Lazy.runWriterT . k)
   {-# INLINEABLE scoped #-}
 instance Monoid w => Choice (Lazy.WriterT w) where
-  choice _ _ f = Lazy.WriterT $
-    runLazyWriterTState <$> f (fmap LazyWriterTState . Lazy.runWriterT)
+  choice = choiceGivenInterpreterBasedChoice $ \f ->
+    Lazy.WriterT $
+      runLazyWriterTState <$> f (fmap LazyWriterTState . Lazy.runWriterT)
   {-# INLINABLE choice #-}
 
 instance Monoid w => Handler (Strict.WriterT w) where
@@ -330,8 +347,9 @@ instance Monoid w => Scoped (Strict.WriterT w) where
     runStrictWriterTState <$> f (fmap StrictWriterTState . Strict.runWriterT . k)
   {-# INLINEABLE scoped #-}
 instance Monoid w => Choice (Strict.WriterT w) where
-  choice _ _ f = Strict.WriterT $
-    runStrictWriterTState <$> f (fmap StrictWriterTState . Strict.runWriterT)
+  choice = choiceGivenInterpreterBasedChoice $ \f ->
+    Strict.WriterT $
+      runStrictWriterTState <$> f (fmap StrictWriterTState . Strict.runWriterT)
   {-# INLINABLE choice #-}
 
 -- | An open type family that is used to determine which effects ought to be handled by which

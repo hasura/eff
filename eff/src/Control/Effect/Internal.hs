@@ -66,15 +66,13 @@ instance Scoped t => Scoped (LiftT t) where
   {-# INLINABLE scoped #-}
 
 instance Choice t => Choice (LiftT t) where
-  choice m f g = LiftT $ choice
-    (coerce m) (\m' -> coerce $ f (coerce <$> m'))
-    (\choose -> coerce <$> g (fmap coerce . choose . coerce))
+  choice m f = LiftT $ choice (coerce m) (\m' -> coerce $ f (coerce <$> m'))
   {-# INLINABLE choice #-}
 
 instance (Alternative m, Monad m, Choice t) => Alternative (LiftT t m) where
   empty = lift empty
   {-# INLINE empty #-}
-  a <|> b = choice a (\a' -> hmap (a' <|>) b) (\choose -> choose a <|> choose b)
+  a <|> b = choice a (\a' -> hmap (a' <|>) b)
   {-# INLINE (<|>) #-}
 
 instance (Alternative m, Monad m, Choice t) => MonadPlus (LiftT t m)
@@ -136,9 +134,7 @@ instance Scoped t => Scoped (EffT t) where
   {-# INLINABLE scoped #-}
 
 instance Choice t => Choice (EffT t) where
-  choice m f g = EffT $ choice
-    (coerce m) (\m' -> coerce $ f (coerce <$> m'))
-    (\choose -> coerce <$> g (fmap coerce . choose . coerce))
+  choice m f = EffT $ choice (coerce m) (\m' -> coerce $ f (coerce <$> m'))
   {-# INLINABLE choice #-}
 
 instance (Send Alternative t m, Monad (t m)) => Alternative (EffT t m) where

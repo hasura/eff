@@ -34,7 +34,7 @@ class Monad m => Error e m where
 instance (Choice t, Scoped t, Error e m) => Error e (LiftT t m) where
   throw = lift . throw
   {-# INLINE throw #-}
-  catch m f = choice m (\m' -> scoped (catch m') id f) (\choose -> catch (choose m) (choose . f))
+  catch m f = choice m (\m' -> scoped (catch m') id f)
   {-# INLINE catch #-}
 
 instance Send (Error e) t m => Error e (EffT t m) where

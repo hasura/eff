@@ -141,7 +141,7 @@ instance Scoped NonDetT where
   {-# INLINABLE scoped #-}
 
 instance Choice NonDetT where
-  choice m0 f _ = go m0 where
+  choice m0 f = go m0 where
     go m = NonDetT $ runNonDetT (f (NonDetTState <$> runNonDetT m)) <&> \case
       Nothing      -> Nothing
       Just (x, m') -> Just (x, go m')
