@@ -37,12 +37,12 @@ class Monad m => State s m where
   modify f = put . f =<< get
   {-# INLINE modify #-}
 
-instance (Monad (t m), Send (State s) t m) => State s (EffT t m) where
+instance Send (State s) t m => State s (EffT t m) where
   get = send @(State s) get
   {-# INLINE get #-}
-  put s = send @(State s) (put s)
+  put s = send @(State s) $ put s
   {-# INLINE put #-}
-  modify f = send @(State s) (modify f)
+  modify f = send @(State s) $ modify f
   {-# INLINE modify #-}
 
 -- | Note: this instance provides 'put' and 'modify' operations that are strict in the state.
@@ -54,14 +54,14 @@ instance Monad m => State s (StateT s m) where
   modify = Trans.modify'
   {-# INLINE modify #-}
 
-runState :: Functor m => s -> EffT (StateT s) m a -> m (s, a)
+runState :: forall s m a. Functor m => s -> EffT (StateT s) m a -> m (s, a)
 runState s = fmap swap . flip runStateT s . runEffT
 {-# INLINE runState #-}
 
-evalState :: Monad m => s -> EffT (StateT s) m a -> m a
+evalState :: forall s m a. Monad m => s -> EffT (StateT s) m a -> m a
 evalState s = flip evalStateT s . runEffT
 {-# INLINE evalState #-}
 
-execState :: Monad m => s -> EffT (StateT s) m a -> m s
+execState :: forall s m a. Monad m => s -> EffT (StateT s) m a -> m s
 execState s = flip execStateT s . runEffT
 {-# INLINE execState #-}

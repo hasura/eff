@@ -11,3 +11,4 @@ package *
 
 package eff
   ghc-options: -j
+  haddock-options: "--optghc=-Wno-unused-imports"

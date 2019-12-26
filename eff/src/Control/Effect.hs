@@ -68,7 +68,6 @@ module Control.Effect (
   -- $defining_effects
   , EffectK
   , Send(..)
-  , controlT
 
   -- * Implementing new effect handlers
   -- $handling_effects
@@ -78,16 +77,16 @@ module Control.Effect (
   , EffT(..)
   , EffsT
 
-  -- ** The @Handles@ type family
+  -- ** Handler types
   , Handles
   , type (==)
   , Elem
-
-  -- ** The @HandlerT@ transformer
   , HandlerT(..)
+  , Handler
   ) where
 
 import Control.Effect.Internal
+import Control.Handler.Internal
 
 #ifdef __HADDOCK_VERSION__
 import Control.Effect.Reader
@@ -95,7 +94,6 @@ import Control.Effect.State
 import Control.Effect.Error
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.Control
 #endif
 
 {-$using_effects
@@ -202,9 +200,9 @@ the function, not just in the result (or more precisely, uses of @m@ in negative
 @withFile@ also requires “lowering” the action produced by the callback. This kind of effect is
 called a /higher-order/, or /scoped/, effect.
 
-The 'MonadTransControl' class from the @monad-control@ package is designed to lift higher-order
-effects. While 'MonadTrans' provides the power to 'lift' actions, 'MonadTransControl' provides the
-additional power to lower certain actions in the process.
+The 'Handler' class extends the 'MonadTrans' class with an additional power: the ability to lift
+higher-order effects. While 'MonadTrans' provides the power to 'lift' actions, 'Handler' provides
+the 'liftWith' operation, which may lower certain actions in the process.
 
 To update the @FileSystem@ instance for 'EffT', it is necessary to use the more powerful 'sendWith'
 operation to implement @withFile@. 'sendWith' accepts two arguments instead of one: the first
@@ -216,11 +214,10 @@ looks like this:
 @
   withFile path mode f = 'sendWith' \@FileSystem
     (writeFile path mode ('runEffT' '.' f))
-    ('controlT' '$' \\lower -> writeFile path mode (lower '.' 'runEffT' '.' f))
+    ('liftWith' '$' \\lower -> writeFile path mode (lower '.' 'runEffT' '.' f))
 @
 
-A full explanation of 'MonadTransControl' is outside the scope of this documentation; see the
-documentation for "Control.Monad.Trans.Control" for more details. -}
+For more details about how to properly use 'liftWith', see the documentation for 'Handler'. -}
 
 {-$handling_effects
 
