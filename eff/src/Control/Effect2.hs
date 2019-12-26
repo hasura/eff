@@ -1,3 +1,5 @@
+{-# LANGUAGE UndecidableInstances #-}
+
 module Control.Effect2
   ( Eff
   , run
@@ -6,7 +8,7 @@ module Control.Effect2
   , (:<)
   , send
 
-  , HandlerM
+  , Handle
   , handle
   , bind
   , escape
@@ -32,11 +34,16 @@ module Control.Effect2
   , evalState
   , execState
 
+  , NonDet(..)
+  , runNonDetAll
+
   , type (~>)
   , (&)
   ) where
 
+import Control.Applicative
 import Control.Natural (type (~>))
+import Data.Bool (bool)
 import Data.Function
 import Data.Tuple (swap)
 
@@ -103,3 +110,18 @@ runState s m = evalState s (curry swap <$> m <*> get)
 
 execState :: forall s a effs. KnownLength effs => s -> Eff (State s ': effs) a -> Eff effs s
 execState s m = evalState s (m *> get)
+
+data NonDet :: EffectK where
+  Empty :: NonDet m a
+  Choose :: NonDet m Bool
+
+instance (NonDet :< effs) => Alternative (Eff effs) where
+  empty = send Empty
+  {-# INLINE empty #-}
+  a <|> b = send Choose >>= bool b a
+  {-# INLINE (<|>) #-}
+
+runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
+runNonDetAll m = (pure <$> m) & handle () \case
+  Empty -> abort empty
+  Choose -> shift \k -> liftA2 (<|>) (k True) (k False)
