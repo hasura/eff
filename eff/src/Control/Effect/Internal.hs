@@ -38,24 +38,14 @@ assertM b = assert b $ pure ()
 type Effect = (Type -> Type) -> Type -> Type
 
 data Cell (s :: Type) :: Effect
-data Handle (eff :: Effect) (i :: Type) (effs :: [Effect]) :: Effect
 
 type family Handles eff :: Constraint where
   Handles (Cell s) = NoHandling Cell (Cell s)
-  Handles (Handle eff i effs) = NoHandling Handle (Handle eff i effs)
   Handles _ = ()
 type family NoHandling c eff where
   NoHandling c eff = TypeError
     ( 'Text "no instance for ‘" ':<>: 'ShowType eff ':<>: 'Text "’;"
     ':$$: 'Text "  " ':<>: 'ShowType c ':<>: 'Text " is a primitive effect and cannot be handled" )
-
--- | GHC doesn’t provide a very easy way to propagate negative information, so it’s hard to connect
--- the 'Handles' constraint to its implication for ':->'. This casts away the constraint manually.
--- withHandles
---   :: forall eff i effs hs r. (Handles eff, effs :-> hs)
---   => ((eff ': effs) :-> 'PROMPT eff i hs => r) -> r
--- withHandles = with $ axiomC @((eff ': effs) :-> 'PROMPT eff i hs)
--- {-# INLINE withHandles #-}
 
 data FramesK
   = ROOT Type
@@ -80,28 +70,6 @@ type family EffKs hs where
   EffKs ('ROOT _) = '[]
   EffKs ('CELL s hs) = (Cell s ': EffKs hs)
   EffKs ('PROMPT eff _ hs) = eff ': EffKs hs
-
--- type family effs :-> hs :: Constraint where
---   '[] :-> 'ROOT _ = ()
---   (Cell s ': effs) :-> 'CELL s' hs = (s ~ s', effs :-> hs)
---   (Handle eff i effs ': effs') :-> 'PROMPT eff' i' hs = (Handles eff, eff ~ eff', effs ~ effs', i ~ i', effs :-> hs)
---   (eff ': effs) :-> 'PROMPT eff' _ hs = (eff ~ eff', effs :-> hs)
-
--- GHC sadly doesn’t automatically infer superclasses for closed type families returning
--- constraints, so the following axioms are sometimes necessary to get reduction of (:->) to move
--- forward.
-
--- decompCell
---   :: forall s effs hs r. (Cell s ': effs) :-> hs
---   => (forall hs'. hs ~ 'CELL s hs' => Proxy# hs' -> r) -> r
--- decompCell f = with (axiom @hs @('CELL s hs')) (f (proxy# @_ @hs')) :: forall (hs' :: FramesK). r
--- {-# INLINE decompCell #-}
---
--- decompHandle
---   :: forall eff i effs effs' hs r. (Handle eff i effs ': effs') :-> hs
---   => (forall hs'. hs ~ 'PROMPT eff i hs' => Proxy# hs' -> r) -> r
--- decompHandle f = with (axiom @hs @('PROMPT eff i hs')) (f (proxy# @_ @hs')) :: forall (hs' :: FramesK). r
--- {-# INLINE decompHandle #-}
 
 -- class KnownLength (a :: k) where
 --   lengthVal :: Int
@@ -245,10 +213,6 @@ newtype Eff effs a = Eff
 mkEff :: forall effs a. (forall hs. Proxy# hs -> (a -> Frames hs -> R hs) -> effs :->> hs -> Frames hs -> R hs) -> Eff effs a
 mkEff f = Eff (f (proxy# @_ @hs) :: forall hs. (a -> Frames hs -> R hs) -> effs :->> hs -> Frames hs -> R hs)
 {-# INLINE mkEff #-}
-
--- data Context effs hs = Context
---   { frames :: {-# UNPACK #-} Frames hs
---   , targets :: {-# UNPACK #-} effs :->> hs }
 
 -- | An array of metacontinuation 'Frame's. Newer frames are added to the /end/ of the array, so the
 -- array is stored “backwards” relative to the order the frames appear in 'FramesK'. This ensures
@@ -442,13 +406,6 @@ instance Monad (Eff effs) where
 lift :: forall effs effs'. effs :<< effs' => Eff effs ~> Eff effs'
 lift (Eff m) = Eff \k ts -> m k $! dropTargets ts
 
--- liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
--- liftH (Eff m) = mkEff \(_ :: Proxy# fs') k ts fs ->
-  -- withEffectFrame @(Handle eff i effs) @effs' @hs' \(_ :: Proxy# effs'') (_ :: Proxy# hs) ->
-  -- decompHandle @eff @i @effs @effs'' @hs \(_ :: Proxy# hs'') ->
-  -- withHandles @eff @i @effs @hs'' $
-  --   m @hs (\a hs' -> k a $! replaceFrames hs' hs) $! takeFrames hs
-
 send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
 send e = Eff \k ts fs -> withHandler @eff ts fs \_ _ h -> hSend h e k ts fs
 
@@ -463,10 +420,6 @@ abort a = mkEff \(_ :: Proxy# fs') _ ts fs ->
              Frames $ cloneSmallArray (unFrames fs) 0 (idx_f + 1)
        in with (axiom @(R fs) @(R fs')) $ hCont (peekFrame fs') a fs'
      ) :: forall (fs :: FramesK). R fs'
-
-  -- withEffectFrame @(Handle eff i effs) @effs' @hs' \(_ :: Proxy# effs'') (_ :: Proxy# hs) ->
-  -- decompHandle @eff @i @effs @effs'' @hs \_ ->
-  --   hCont (lookupFrame @hs hs) a $! takeFrames @hs hs
 
 -- shiftH
 --   :: forall eff i hs hs' a. ('PROMPT eff i hs :<< hs')
@@ -508,17 +461,11 @@ abort a = mkEff \(_ :: Proxy# fs') _ ts fs ->
 -- runCell s (Eff m) = Eff \k hs -> m (\a hs' -> k a $! popFrame hs') $! pushFrame @('CELL s) s hs
 
 class (eff ': effs) :<< effs' => Handling eff effs (i :: Type) effs' | eff effs' -> i effs
-  -- handlerIndexVal :: Int
 
 newtype WithHandling eff effs i effs' r = WithHandling (Handling eff effs i effs' => r)
 withHandlerIndex :: forall eff effs i effs' r. Int -> (Handling eff effs i effs' => r) -> r
 withHandlerIndex n x = unsafeCoerce (WithHandling @eff @effs @i @effs' x) n
 {-# INLINE withHandlerIndex #-}
-
--- class ((eff ': effs) :<< effs', Handling' eff effs i effs')
---   => Handling eff effs i effs' | eff effs' -> i effs
--- instance ((eff ': effs) :<< effs', Handling' eff effs i effs')
---   => Handling eff effs i effs'
 
 handle
   :: forall eff a effs. Handles eff
