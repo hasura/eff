@@ -50,17 +50,17 @@ withHandles
 withHandles = with $ axiomC @((eff ': effs) :-> 'PROMPT eff i hs)
 {-# INLINE withHandles #-}
 
-data HandlersK
+data FramesK
   = ROOT Type
-  | CELL Type HandlersK
-  | PROMPT Effect Type HandlersK
+  | CELL Type FramesK
+  | PROMPT Effect Type FramesK
 
 type family R hs where
   R ('ROOT r) = r
   R ('CELL _ hs) = R hs
   R ('PROMPT _ _ hs) = R hs
 
--- | If one 'HandlersK' is contained within the other, their roots must be equal.
+-- | If one 'FramesK' is contained within the other, their roots must be equal.
 rootsEq :: hs :<< hs' => R hs :~: R hs'
 rootsEq = axiom
 {-# INLINE rootsEq #-}
@@ -87,13 +87,13 @@ type family effs :-> hs :: Constraint where
 decompCell
   :: forall s effs hs r. (Cell s ': effs) :-> hs
   => (forall hs'. hs ~ 'CELL s hs' => Proxy# hs' -> r) -> r
-decompCell f = with (axiom @hs @('CELL s hs')) (f (proxy# @_ @hs')) :: forall (hs' :: HandlersK). r
+decompCell f = with (axiom @hs @('CELL s hs')) (f (proxy# @_ @hs')) :: forall (hs' :: FramesK). r
 {-# INLINE decompCell #-}
 
 decompHandle
   :: forall eff i effs effs' hs r. (Handle eff i effs ': effs') :-> hs
   => (forall hs'. hs ~ 'PROMPT eff i hs' => Proxy# hs' -> r) -> r
-decompHandle f = with (axiom @hs @('PROMPT eff i hs')) (f (proxy# @_ @hs')) :: forall (hs' :: HandlersK). r
+decompHandle f = with (axiom @hs @('PROMPT eff i hs')) (f (proxy# @_ @hs')) :: forall (hs' :: FramesK). r
 {-# INLINE decompHandle #-}
 
 class KnownLength (a :: k) where
@@ -187,7 +187,7 @@ withSubFrames f =
   $ withRootsEq @fs @fs'
   $ with (axiomC @(effs :-> fs))
   $ f (proxy# @_ @fs)
-  ) :: forall (fs :: HandlersK). r
+  ) :: forall (fs :: FramesK). r
 {-# INLINE withSubFrames #-}
 
 withHandleIndex
@@ -207,7 +207,7 @@ withEffectFrame f =
   $ withRootsEq @hs @hs'
   $ with (axiomC @((eff ': effs) :-> hs))
   $ f (proxy# @_ @effs) (proxy# @_ @hs)
-  ) :: forall (effs :: [Effect]) (hs :: HandlersK). r
+  ) :: forall (effs :: [Effect]) (hs :: FramesK). r
 {-# INLINE withEffectFrame #-}
 
 type family Frame fs where
@@ -217,38 +217,38 @@ type family Frame fs where
 data Handler eff i hs = Handler
   { hSend :: forall effs' hs'. (effs' :-> hs', 'PROMPT eff i hs :<< hs')
           => Proxy# hs' -> eff (Eff effs') ~> Eff effs'
-  , hCont :: i -> Handlers ('PROMPT eff i hs) -> R hs
+  , hCont :: i -> Frames ('PROMPT eff i hs) -> R hs
   -- ^ The continuation of this prompt. When a prompt is first installed via 'handleH', 'hCont' is
   -- initialized to a continuation that pops the prompt, then returns to the parent metacontinuation
   -- frame. 'hCont' can be further extended by uses of 'shiftH'; each use extends the continuation
   -- from the “outside in,” so earlier uses of 'shiftH' wrap later uses.
   }
 
--- | An array of 'Handler's stored in reverse order.
-newtype Handlers (hs :: HandlersK) = Handlers { unHandlers :: SmallArray Any }
+-- | An array of metacontinuation 'Frame's.
+newtype Frames (fs :: FramesK) = Frames { unHandlers :: SmallArray Any }
 
-root :: Handlers ('ROOT r)
-root = Handlers mempty
+root :: Frames ('ROOT r)
+root = Frames mempty
 {-# INLINE root #-}
 
-pushFrame :: forall f fs. Frame (f fs) -> Handlers fs -> Handlers (f fs)
-pushFrame h (Handlers hs) = Handlers $ runSmallArray do
+pushFrame :: forall f fs. Frame (f fs) -> Frames fs -> Frames (f fs)
+pushFrame h (Frames hs) = Frames $ runSmallArray do
   let len = sizeofSmallArray hs
   hs' <- newSmallArray (len + 1) (error "pushFrame: value left uninitialized")
   copySmallArray hs' 0 hs 0 len
   writeSmallArray hs' len (unsafeCoerce h)
   pure hs'
 
-peekFrame :: Handlers fs -> Frame fs
-peekFrame (Handlers hs) = unsafeCoerce $ indexSmallArray hs (sizeofSmallArray hs - 1)
+peekFrame :: Frames fs -> Frame fs
+peekFrame (Frames hs) = unsafeCoerce $ indexSmallArray hs (sizeofSmallArray hs - 1)
 {-# INLINE peekFrame #-}
 
-popFrame :: forall f fs. Handlers (f fs) -> Handlers fs
-popFrame (Handlers fs) = Handlers $ cloneSmallArray fs 0 (sizeofSmallArray fs - 1)
+popFrame :: forall f fs. Frames (f fs) -> Frames fs
+popFrame (Frames fs) = Frames $ cloneSmallArray fs 0 (sizeofSmallArray fs - 1)
 {-# INLINE popFrame #-}
 
-lookupFrame :: forall fs fs'. fs :<< fs' => Handlers fs' -> Frame fs
-lookupFrame (Handlers hs) =
+lookupFrame :: forall fs fs'. fs :<< fs' => Frames fs' -> Frame fs
+lookupFrame (Frames hs) =
   let idx = indexValH @fs @fs'
   in assert (idx >= 0) $ assert (idx < sizeofSmallArray hs) $
     unsafeCoerce $ indexSmallArray hs idx
@@ -256,13 +256,13 @@ lookupFrame (Handlers hs) =
 
 -- withPromptAfter
 --   :: forall hs hs' r. (hs :<< hs')
---   => Handlers hs'
+--   => Frames hs'
 --   -> (forall eff i. Handler eff i hs -> r)
 --   -- ^ called when there is a prompt after the given index
 --   -> ((hs ~ hs') => r)
 --   -- ^ called when the given index refers to the last prompt
 --   -> r
--- withPromptAfter (Handlers hs) f g =
+-- withPromptAfter (Frames hs) f g =
 --   let len = lengthValH @hs'
 --       idx = indexValH @'(hs, hs')
 --   in assert (idx >= 0) $ assert (len > 0) $ assert (idx < len) $ assert (len == sizeofSmallArray hs) if
@@ -270,41 +270,41 @@ lookupFrame (Handlers hs) =
 --     | otherwise -> f $! unsafeCoerce (indexSmallArray hs (idx + 1))
 -- {-# INLINE withPromptAfter #-}
 
-replaceFrame :: forall fs fs'. fs :<< fs' => Frame fs -> Handlers fs' -> Handlers fs'
-replaceFrame h (Handlers hs) = Handlers $ runSmallArray do
+replaceFrame :: forall fs fs'. fs :<< fs' => Frame fs -> Frames fs' -> Frames fs'
+replaceFrame h (Frames hs) = Frames $ runSmallArray do
   hs' <- thawSmallArray hs 0 (sizeofSmallArray hs)
   let idx = indexValH @fs @fs'
   writeSmallArray hs' idx (unsafeCoerce h)
   pure hs'
 
-takeFrames :: forall hs hs'. hs :<< hs' => Handlers hs' -> Handlers hs
-takeFrames (Handlers hs) =
+takeFrames :: forall hs hs'. hs :<< hs' => Frames hs' -> Frames hs
+takeFrames (Frames hs) =
   let idx = indexValH @hs @hs'
   in assert (idx >= 0) $ assert (idx < sizeofSmallArray hs) $
-    Handlers $ cloneSmallArray hs 0 (idx + 1)
+    Frames $ cloneSmallArray hs 0 (idx + 1)
 {-# INLINE takeFrames #-}
 
-replaceFrames :: forall hs hs'. hs :<< hs' => Handlers hs -> Handlers hs' -> Handlers hs'
-replaceFrames (Handlers hs) (Handlers hs') = Handlers $ runSmallArray do
+replaceFrames :: forall hs hs'. hs :<< hs' => Frames hs -> Frames hs' -> Frames hs'
+replaceFrames (Frames hs) (Frames hs') = Frames $ runSmallArray do
   hs'' <- thawSmallArray hs' 0 (sizeofSmallArray hs')
   let idx = indexValH @hs @hs'
   assert (idx >= 0) $ assert (idx < sizeofSmallArray hs) $
     copySmallArray hs'' 0 hs 0 (idx + 1)
   pure hs''
 
--- takeFramesUpTo :: forall f fs fs'. f fs :<< fs' => Handlers fs' -> Handlers fs
--- takeFramesUpTo (Handlers hs) =
+-- takeFramesUpTo :: forall f fs fs'. f fs :<< fs' => Frames fs' -> Frames fs
+-- takeFramesUpTo (Frames hs) =
 --   let idx = indexValH @_ @'(f fs, fs')
 --   in assert (idx >= 0) $ assert (idx < sizeofSmallArray hs) $
---     Handlers $ cloneSmallArray hs 0 idx
+--     Frames $ cloneSmallArray hs 0 idx
 -- {-# INLINE takeFramesUpTo #-}
 
 withHandler
   :: forall eff effs hs' r. (eff :< effs, effs :-> hs')
-  => Handlers hs'
+  => Frames hs'
   -> (forall i hs. 'PROMPT eff i hs :<< hs' => Proxy# i -> Proxy# hs -> Handler eff i hs -> r)
   -> r
-withHandler (Handlers hs) f =
+withHandler (Frames hs) f =
   let idx = indexVal @eff @effs in
   case unsafeCoerce $ indexSmallArray hs idx of
     (h :: Handler eff i hs) ->
@@ -315,11 +315,11 @@ withHandler (Handlers hs) f =
 
 
 newtype Eff effs a = Eff { unEff :: forall hs. effs :-> hs
-                                 => (a -> Handlers hs -> R hs)
-                                 -> Handlers hs -> R hs }
+                                 => (a -> Frames hs -> R hs)
+                                 -> Frames hs -> R hs }
 
-mkEff :: forall effs a. (forall hs. effs :-> hs => Proxy# hs -> (a -> Handlers hs -> R hs) -> Handlers hs -> R hs) -> Eff effs a
-mkEff f = Eff (f (proxy# @_ @hs) :: forall hs. effs :-> hs => (a -> Handlers hs -> R hs) -> Handlers hs -> R hs)
+mkEff :: forall effs a. (forall hs. effs :-> hs => Proxy# hs -> (a -> Frames hs -> R hs) -> Frames hs -> R hs) -> Eff effs a
+mkEff f = Eff (f (proxy# @_ @hs) :: forall hs. effs :-> hs => (a -> Frames hs -> R hs) -> Frames hs -> R hs)
 {-# INLINE mkEff #-}
 
 run :: Eff '[] a -> a
@@ -370,10 +370,10 @@ abort a = mkEff \(_ :: Proxy# hs') _ hs ->
 -- shiftH f = withRootsEq @('PROMPT eff i hs) @hs' $ EffH \kn hs ->
 --   let !idx = indexValH @'( 'PROMPT eff i hs, hs')
 --
---       m :: (i -> Handlers ('PROMPT eff i hs) -> R hs) -> Handlers ('PROMPT eff i hs) -> R hs
---       m = unEffH $ f \a -> EffH \k1 (Handlers hs1) ->
+--       m :: (i -> Frames ('PROMPT eff i hs) -> R hs) -> Frames ('PROMPT eff i hs) -> R hs
+--       m = unEffH $ f \a -> EffH \k1 (Frames hs1) ->
 --         assert (idx == sizeofSmallArray hs1 - 1) $
---           kn a $! Handlers $ runSmallArray do
+--           kn a $! Frames $ runSmallArray do
 --             -- copy the original set of prompts for a fresh copy of all local state
 --             hs' <- thawSmallArray (unHandlers hs) 0 (sizeofSmallArray $ unHandlers hs)
 --             -- replace more global prompts with their updated versions
