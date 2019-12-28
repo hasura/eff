@@ -10,7 +10,6 @@ module Control.Effect
   , send
 
   , handle
-  , liftH
   , abort
 
   , Error(..)
@@ -65,7 +64,7 @@ catch a b = send $ Catch a b
 
 runError :: forall e a effs. Eff (Error e ': effs) a -> Eff effs (Either e a)
 runError m = (Right <$> m) & handle \case
-  Throw e -> abort @(Error e) @(Either e a) @_ @effs $ Left e
+  Throw e -> abort @(Error e) $ Left e
   Catch m' f -> either f pure =<< runError m'
 
 data Reader r :: Effect where

@@ -193,12 +193,12 @@ type family a :<<! b :: Constraint where
 -- withIndex :: forall a b r. Int -> (KnownIndex a b => r) -> r
 -- withIndex n x = unsafeCoerce (WithIndex @a @b x) n
 -- {-# INLINE withIndex #-}
---
--- newtype WithIndexH a b r = WithIndexH (KnownIndexH a b => r)
--- withIndexH :: forall a b r. Int -> (KnownIndexH a b => r) -> r
--- withIndexH n x = unsafeCoerce (WithIndexH @a @b x) n
--- {-# INLINE withIndexH #-}
---
+
+-- newtype WithSubIndex a b r = WithSubIndex (SubIndex a b => r)
+-- withSubIndex :: forall a b r. Int -> (SubIndex a b => r) -> r
+-- withSubIndex n x = unsafeCoerce (WithSubIndex @a @b x) n
+-- {-# INLINE withSubIndex #-}
+
 -- withLengthFromIndexH :: forall hs hs' r. KnownIndexH hs hs' => (KnownLength hs => r) -> r
 -- withLengthFromIndexH = withLength @hs (indexValH @hs @hs' + 1)
 -- {-# INLINE withLengthFromIndexH #-}
@@ -299,6 +299,10 @@ rootTargets :: '[] :->> 'ROOT r
 rootTargets = Targets mempty
 {-# INLINE rootTargets #-}
 
+weakenTargets :: effs :->> fs -> effs :->> f fs
+weakenTargets (Targets ts) = Targets ts
+{-# INLINE weakenTargets #-}
+
 pushFrame :: forall f fs. Frame (f fs) -> Frames fs -> Frames (f fs)
 pushFrame h (Frames hs) = Frames $ runSmallArray do
   let len = sizeofSmallArray hs
@@ -328,27 +332,27 @@ dropTargets (Targets ts) = Targets $ runByteArray do
   copyByteArray ts' 0 ts idx len
   pure ts'
 
-replaceTargets :: forall effs effs' fs. effs :<< effs' => effs :->> fs -> effs' :->> fs -> effs' :->> fs
-replaceTargets (Targets ts) (Targets ts') = Targets $ runByteArray do
-  let idx = subIndexVal @effs @effs' * sIZEOF_INT
-  assertM $ idx >= 0
-  assertM $ sizeofByteArray ts >= 0
-  assertM $ (sizeofByteArray ts `mod` sIZEOF_INT) == 0
-  assertM $ sizeofByteArray ts' >= 0
-  assertM $ (sizeofByteArray ts' `mod` sIZEOF_INT) == 0
-  ts'' <- newByteArray (sizeofByteArray ts')
-  copyByteArray ts'' 0 ts' 0 idx
-  copyByteArray ts'' idx ts 0 (sizeofByteArray ts)
-  pure ts''
+-- replaceTargets :: forall effs effs' fs. effs :<< effs' => effs :->> fs -> effs' :->> fs -> effs' :->> fs
+-- replaceTargets (Targets ts) (Targets ts') = Targets $ runByteArray do
+--   let idx = subIndexVal @effs @effs' * sIZEOF_INT
+--   assertM $ idx >= 0
+--   assertM $ sizeofByteArray ts >= 0
+--   assertM $ (sizeofByteArray ts `mod` sIZEOF_INT) == 0
+--   assertM $ sizeofByteArray ts' >= 0
+--   assertM $ (sizeofByteArray ts' `mod` sIZEOF_INT) == 0
+--   ts'' <- newByteArray (sizeofByteArray ts')
+--   copyByteArray ts'' 0 ts' 0 idx
+--   copyByteArray ts'' idx ts 0 (sizeofByteArray ts)
+--   pure ts''
 
--- peekFrame :: Frames fs -> Frame fs
--- peekFrame (Frames hs) = unsafeCoerce $ indexSmallArray hs (sizeofSmallArray hs - 1)
--- {-# INLINE peekFrame #-}
---
--- popFrame :: forall f fs. Frames (f fs) -> Frames fs
--- popFrame (Frames fs) = Frames $ cloneSmallArray fs 0 (sizeofSmallArray fs - 1)
--- {-# INLINE popFrame #-}
---
+peekFrame :: Frames fs -> Frame fs
+peekFrame (Frames fs) = unsafeCoerce $ indexSmallArray fs (sizeofSmallArray fs - 1)
+{-# INLINE peekFrame #-}
+
+popFrame :: forall f fs. Frames (f fs) -> Frames fs
+popFrame (Frames fs) = Frames $ cloneSmallArray fs 0 (sizeofSmallArray fs - 1)
+{-# INLINE popFrame #-}
+
 -- lookupFrame :: forall fs fs'. fs :<< fs' => Frames fs' -> Frame fs
 -- lookupFrame (Frames hs) =
 --   let idx = indexValH @fs @fs'
@@ -413,6 +417,10 @@ withHandler (Targets ts) (Frames fs) f =
       f (proxy# @_ @i) (proxy# @_ @fs) h
 {-# INLINE withHandler #-}
 
+-- -- | Converts a @effs ':<<' effs'@ constraint into a @fs ':<<' fs'@ constraint.
+-- withSubHandler
+--   :: forall eff effs fs' r. eff :< effs
+
 run :: Eff '[] a -> a
 run (Eff m) = m (\v _ -> v) rootTargets rootFrames
 {-# INLINE run #-}
@@ -434,21 +442,31 @@ instance Monad (Eff effs) where
 lift :: forall effs effs'. effs :<< effs' => Eff effs ~> Eff effs'
 lift (Eff m) = Eff \k ts -> m k $! dropTargets ts
 
--- liftH :: forall eff effs effs' i. Handle eff i effs :< effs' => Eff (eff ': effs) ~> Eff effs'
--- liftH (Eff m) = mkEff \(_ :: Proxy# hs') k hs ->
---   withEffectFrame @(Handle eff i effs) @effs' @hs' \(_ :: Proxy# effs'') (_ :: Proxy# hs) ->
---   decompHandle @eff @i @effs @effs'' @hs \(_ :: Proxy# hs'') ->
---   withHandles @eff @i @effs @hs'' $
---     m @hs (\a hs' -> k a $! replaceFrames hs' hs) $! takeFrames hs
+-- liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
+-- liftH (Eff m) = mkEff \(_ :: Proxy# fs') k ts fs ->
+  -- withEffectFrame @(Handle eff i effs) @effs' @hs' \(_ :: Proxy# effs'') (_ :: Proxy# hs) ->
+  -- decompHandle @eff @i @effs @effs'' @hs \(_ :: Proxy# hs'') ->
+  -- withHandles @eff @i @effs @hs'' $
+  --   m @hs (\a hs' -> k a $! replaceFrames hs' hs) $! takeFrames hs
 
 send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
 send e = Eff \k ts fs -> withHandler @eff ts fs \_ _ h -> hSend h e k ts fs
 
--- abort :: forall eff i a effs effs'. Handle eff i effs :< effs' => i -> Eff effs' a
--- abort a = mkEff \(_ :: Proxy# hs') _ hs ->
---   withEffectFrame @(Handle eff i effs) @effs' @hs' \(_ :: Proxy# effs'') (_ :: Proxy# hs) ->
---   decompHandle @eff @i @effs @effs'' @hs \_ ->
---     hCont (lookupFrame @hs hs) a $! takeFrames @hs hs
+abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
+abort a = mkEff \(_ :: Proxy# fs') _ ts fs ->
+  -- TODO: extract into safer interface
+  let !idx_t = subIndexVal @(eff ': effs) @effs' * sIZEOF_INT
+      !idx_f = assert (idx_t >= 0) $ assert (idx_t < sizeofByteArray (unTargets ts)) $
+        indexByteArray (unTargets ts) idx_t
+  in ( let fs' :: Frames ('PROMPT eff i fs)
+           !fs' = assert (idx_f >= 0) $ assert (idx_f < sizeofSmallArray (unFrames fs)) $
+             Frames $ cloneSmallArray (unFrames fs) 0 (idx_f + 1)
+       in with (axiom @(R fs) @(R fs')) $ hCont (peekFrame fs') a fs'
+     ) :: forall (fs :: FramesK). R fs'
+
+  -- withEffectFrame @(Handle eff i effs) @effs' @hs' \(_ :: Proxy# effs'') (_ :: Proxy# hs) ->
+  -- decompHandle @eff @i @effs @effs'' @hs \_ ->
+  --   hCont (lookupFrame @hs hs) a $! takeFrames @hs hs
 
 -- shiftH
 --   :: forall eff i hs hs' a. ('PROMPT eff i hs :<< hs')
@@ -488,16 +506,40 @@ send e = Eff \k ts fs -> withHandler @eff ts fs \_ _ h -> hSend h e k ts fs
 --
 -- runCell :: forall s effs. s -> Eff (Cell s ': effs) ~> Eff effs
 -- runCell s (Eff m) = Eff \k hs -> m (\a hs' -> k a $! popFrame hs') $! pushFrame @('CELL s) s hs
---
--- handle
---   :: forall eff a effs. Handles eff
---   => (forall effs'. Handle eff a effs :< effs' => eff (Eff effs') ~> Eff effs')
---   -> Eff (eff ': effs) a
---   -> Eff effs a
--- handle f (Eff m) = mkEff \(_ :: Proxy# hs) k0 hs -> withHandles @eff @a @effs @hs
---   let k1 a hs' = k0 a $! popFrame hs'
---       kn a hs' = hCont (peekFrame hs') a hs'
---       f' :: forall effs' hs'. (effs' :-> hs', 'PROMPT eff a hs :<< hs')
---          => Proxy# hs' -> eff (Eff effs') ~> Eff effs'
---       f' _ e = withHandleIndex @eff @a @effs @effs' @hs @hs' $ f e
---   in m kn $! pushFrame (Handler @eff f' k1) hs
+
+class (eff ': effs) :<< effs' => Handling eff effs (i :: Type) effs' | eff effs' -> i effs
+  -- handlerIndexVal :: Int
+
+newtype WithHandling eff effs i effs' r = WithHandling (Handling eff effs i effs' => r)
+withHandlerIndex :: forall eff effs i effs' r. Int -> (Handling eff effs i effs' => r) -> r
+withHandlerIndex n x = unsafeCoerce (WithHandling @eff @effs @i @effs' x) n
+{-# INLINE withHandlerIndex #-}
+
+-- class ((eff ': effs) :<< effs', Handling' eff effs i effs')
+--   => Handling eff effs i effs' | eff effs' -> i effs
+-- instance ((eff ': effs) :<< effs', Handling' eff effs i effs')
+--   => Handling eff effs i effs'
+
+handle
+  :: forall eff a effs. Handles eff
+  => (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
+  -> Eff (eff ': effs) a
+  -> Eff effs a
+handle f (Eff m) = mkEff \(_ :: Proxy# hs) k0 ts0 fs0 ->
+  let k1 a fs2 = k0 a $! popFrame fs2
+      k2 a fs2 = hCont (peekFrame fs2) a fs2
+
+      !idx = sizeofSmallArray $ unFrames fs0
+      -- TODO: make Target construction safer
+      !ts1 = pushTarget (Target idx) (weakenTargets ts0)
+      !len = sizeofByteArray $ unTargets ts1
+
+      f' :: forall effs' hs' b. eff (Eff effs') b
+         -> (b -> Frames hs' -> R hs') -> effs' :->> hs' -> Frames hs' -> R hs'
+      f' e k ts =
+        let len' = sizeofByteArray $ unTargets ts
+            !idx' = assert (((len' - len) `mod` sIZEOF_INT) == 0) $
+              (len' - len) `div` sIZEOF_INT
+        in withHandlerIndex @eff @effs @a @effs' idx' $ unEff (f e) k ts
+      !fs1 = pushFrame (Handler @eff f' k1) fs0
+  in m k2 ts1 fs1
