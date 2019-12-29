@@ -26,9 +26,9 @@ module Control.Effect
   , get
   , put
   , modify
-  -- , runState
-  -- , evalState
-  -- , execState
+  , runState
+  , evalState
+  , execState
 
   , Writer(..)
   , tell
@@ -100,17 +100,18 @@ modify :: State s :< effs => (s -> s) -> Eff effs ()
 modify f = get >>= put . f
 {-# INLINE modify #-}
 
--- evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
--- evalState s0 = runCell s0 . handle \case
---   Get -> liftH @(State s) getC
---   Put s -> liftH @(State s) (putC $! s)
---
--- -- TODO: Eliminate the need for this KnownLength constraint
--- runState :: forall s a effs. KnownLength effs => s -> Eff (State s ': effs) a -> Eff effs (s, a)
--- runState s m = evalState s (curry swap <$> m <*> get)
---
--- execState :: forall s a effs. KnownLength effs => s -> Eff (State s ': effs) a -> Eff effs s
--- execState s m = evalState s (m *> get)
+evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
+evalState s0 m = swizzle m
+  & handle @(State s) \case
+      Get -> liftH @(State s) getC
+      Put s -> liftH @(State s) (putC $! s)
+  & runCell s0
+
+runState :: forall s a effs. s -> Eff (State s ': effs) a -> Eff effs (s, a)
+runState s m = evalState s (curry swap <$> m <*> get)
+
+execState :: forall s a effs. s -> Eff (State s ': effs) a -> Eff effs s
+execState s m = evalState s (m *> get)
 
 data Writer w :: Effect where
   Tell :: w -> Writer w m ()

@@ -42,17 +42,17 @@ spec = do
     go 42 `shouldBe` Right ()
     go (-10) `shouldBe` Left "value must be positive; given -10"
 
-  -- describe "Error + State" do
-  --   it "yields the same state regardless of handler order" do
-  --     let action :: (Error () :< effs, State Integer :< effs) => Eff effs ()
-  --         action = do
-  --           modify @Integer (+ 1)
-  --           (modify @Integer (+ 1) *> throw ()) `catch` \() -> pure ()
-  --           modify @Integer (+ 1)
-  --
-  --     run (execState @Integer 0 $ runError @() action) `shouldBe` 3
-  --     run (runError @() $ execState @Integer 0 action) `shouldBe` Right 3
-  --
+  describe "Error + State" do
+    it "yields the same state regardless of handler order" do
+      let action :: (Error () :< effs, State Integer :< effs) => Eff effs ()
+          action = do
+            modify @Integer (+ 1)
+            (modify @Integer (+ 1) *> throw ()) `catch` \() -> pure ()
+            modify @Integer (+ 1)
+
+      run (execState @Integer 0 $ runError @() action) `shouldBe` 3
+      run (runError @() $ execState @Integer 0 action) `shouldBe` Right 3
+
   -- describe "NonDet" do
   --   describe "runNonDetAll" do
   --     it "collects the results of all branches" do
