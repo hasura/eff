@@ -36,7 +36,7 @@ module Control.Effect
   , censor
 
   , NonDet(..)
-  -- , runNonDetAll
+  , runNonDetAll
 
   , type (~>)
   , (&)
@@ -140,7 +140,7 @@ instance NonDet :< effs => Alternative (Eff effs) where
   a <|> b = send Choose >>= bool b a
   {-# INLINE (<|>) #-}
 
--- runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
--- runNonDetAll m = (pure <$> m) & handle \case
---   Empty -> abort empty
---   Choose -> shift \k -> liftA2 (<|>) (k True) (k False)
+runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
+runNonDetAll m = (pure <$> m) & handle \case
+  Empty -> abort @NonDet empty
+  Choose -> shift @NonDet \k -> liftA2 (<|>) (k True) (k False)

@@ -53,24 +53,24 @@ spec = do
       run (execState @Integer 0 $ runError @() action) `shouldBe` 3
       run (runError @() $ execState @Integer 0 action) `shouldBe` Right 3
 
-  -- describe "NonDet" do
-  --   describe "runNonDetAll" do
-  --     it "collects the results of all branches" do
-  --       let action :: NonDet :< effs => Eff effs (Integer, Integer)
-  --           action = do
-  --             a <- asum $ map pure [1, 2, 3]
-  --             b <- asum $ map pure [4, 5, 6]
-  --             pure (a, b)
-  --       run (runNonDetAll action) `shouldBe` [(a, b) | a <- [1, 2, 3], b <- [4, 5, 6]]
-  --
-  --     specify "choice + catch with exit" do
-  --       let results = run $ runError @() $ runNonDetAll do
-  --             b <- (pure True <|> throw ()) `catch` \() -> pure False
-  --             pure $ not b
-  --       results `shouldBe` Right [False, True]
-  --
-  --     specify "choice + catch with early exit" do
-  --       let results = run $ runError @() $ runNonDetAll do
-  --             b <- (throw () <|> pure True) `catch` \() -> pure False
-  --             pure $ not b
-  --       results `shouldBe` Right [True, False]
+  describe "NonDet" do
+    describe "runNonDetAll" do
+      it "collects the results of all branches" do
+        let action :: NonDet :< effs => Eff effs (Integer, Integer)
+            action = do
+              a <- asum $ map pure [1, 2, 3]
+              b <- asum $ map pure [4, 5, 6]
+              pure (a, b)
+        run (runNonDetAll action) `shouldBe` [(a, b) | a <- [1, 2, 3], b <- [4, 5, 6]]
+
+      specify "choice + catch with exit" do
+        let results = run $ runError @() $ runNonDetAll do
+              b <- (pure True <|> throw ()) `catch` \() -> pure False
+              pure $ not b
+        results `shouldBe` Right [False, True]
+
+      specify "choice + catch with early exit" do
+        let results = run $ runError @() $ runNonDetAll do
+              b <- (throw () <|> pure True) `catch` \() -> pure False
+              pure $ not b
+        results `shouldBe` Right [True, False]
