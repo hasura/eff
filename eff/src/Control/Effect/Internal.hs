@@ -86,10 +86,6 @@ rootsEq :: hs :<<! hs' => R hs :~: R hs'
 rootsEq = axiom
 {-# INLINE rootsEq #-}
 
-type family a == b where
-  a == a = 'True
-  a == b = 'False
-
 class (eff :: Effect) :< (effs :: [Effect]) where
   indexVal :: Int
 instance {-# OVERLAPPING #-} eff :< (eff ': effs) where
@@ -122,18 +118,12 @@ instance f :<# fs => f :<# f' fs where
 
 class (effs :: [Effect]) :<< (effs' :: [Effect]) where
   subIndexVal :: Int
-instance SubIndex (effs == effs') effs effs' => effs :<< effs' where
-  subIndexVal = subIndexVal' @(effs == effs') @effs @effs'
+instance {-# OVERLAPPING #-} effs :<< effs where
+  subIndexVal = 0
   {-# INLINE subIndexVal #-}
-
-class SubIndex (c :: Bool) (effs :: [Effect]) (effs' :: [Effect]) where
-  subIndexVal' :: Int
-instance SubIndex 'True effs effs where
-  subIndexVal' = 0
-  {-# INLINE subIndexVal' #-}
-instance effs :<< effs' => SubIndex 'False effs (eff ': effs') where
-  subIndexVal' = subIndexVal @effs @effs' + 1
-  {-# INLINE subIndexVal' #-}
+instance (effs' ~ (eff ': effs''), effs :<< effs'') => effs :<< effs' where
+  subIndexVal = subIndexVal @effs @effs'' + 1
+  {-# INLINE subIndexVal #-}
 
 class (fs :: FramesK) :<<# (fs' :: FramesK) where
   subIndexValF :: Int
