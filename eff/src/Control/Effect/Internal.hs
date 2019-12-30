@@ -519,11 +519,8 @@ handle f (Eff m) = mkEff \(_ :: Proxy# fs) k0 ts0 fs0 ->
 
 class Swizzle effs effs' where
   swizzleTargets :: effs' :->> fs -> effs :->> fs
-instance {-# INCOHERENT #-} Swizzle effs effs where
-  swizzleTargets = id
-  {-# INLINE swizzleTargets #-}
-instance {-# INCOHERENT #-} Swizzle effs effs' => Swizzle effs (eff ': effs') where
-  swizzleTargets ts = swizzleTargets @effs @effs' $! popTarget ts
+instance {-# INCOHERENT #-} effs :<< effs' => Swizzle effs effs' where
+  swizzleTargets = dropTargets
   {-# INLINE swizzleTargets #-}
 instance Swizzle '[] effs where
   swizzleTargets _ = noTargets
