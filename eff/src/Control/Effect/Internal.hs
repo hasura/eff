@@ -8,9 +8,6 @@
 
 module Control.Effect.Internal where
 
-import Prelude hiding ((.), id)
-
-import Control.Category
 import Control.Exception (assert)
 import Control.Monad
 import Control.Monad.ST
@@ -80,16 +77,16 @@ type family R hs where
   R ('CELL _ hs) = R hs
   R ('PROMPT _ _ _ _ hs) = R hs
 
-data fs :^~: fs' where
+data (fs :: FramesK) :^~: (fs' :: FramesK) where
   TopsRefl :: fs :^~: fs
-  TopsFrame :: f fs :^~: f fs'
+  TopsFrame :: forall (f :: FrameK) fs fs'. f fs :^~: f fs'
 
 class fs ^~ fs' where
   topsEq :: fs :^~: fs'
 instance {-# INCOHERENT #-} fs ^~ fs where
   topsEq = TopsRefl
   {-# INLINE topsEq #-}
-instance f ~ f' => f fs ^~ f' fs' where
+instance f fs'' ~ fs' => (f :: FrameK) fs ^~ fs' where
   topsEq = TopsFrame
   {-# INLINE topsEq #-}
 
@@ -102,6 +99,12 @@ instance With (fs :^~: fs') where
 topsRoot :: forall r fs. 'ROOT r ^~ fs => 'ROOT r :~: fs
 topsRoot = case topsEq @('ROOT r) @fs of TopsRefl -> Refl
 {-# INLINE topsRoot #-}
+
+withTopFramesEq :: forall f fs fs' r. f fs ^~ fs' => (forall fs''. fs' ~ f fs'' => r) -> r
+withTopFramesEq x = case topsEq @(f fs) @fs' of
+  TopsRefl -> x
+  TopsFrame -> x
+{-# INLINE withTopFramesEq #-}
 
 topsTrans :: forall fs1 fs2 fs3. (fs1 ^~ fs2, fs2 ^~ fs3) => fs1 :^~: fs3
 topsTrans = case topsEq @fs1 @fs2 of
@@ -262,20 +265,8 @@ type family Frame f fs where
   Frame ('PROMPT eff effs i effss) fs = Handler eff effs i effss fs
 
 data Handler eff effs i effss fs = Handler
-  { hSend :: forall effs' effss' fs1 a
-           . 'PROMPT eff effs i effss :<# fs1
-          -- ^ Note that we /don’t/ require ('PROMPT eff effs i effss fs :<<# fs1), we only require
-          -- the weaker version using (:<#)! If a continuation is captured that includes this
-          -- prompt, this handler will be re-used, but some of the underlying handlers may be
-          -- different, so we can’t assume anything about the underlying frames.
-          --
-          -- (Strictly speaking, if that happens, the type of the fs parameter to Handler will be
-          -- updated in the new stack of frames, so the constraint would not be /wrong/, but we need
-          -- to be able to re-use the same hSend function in that new Handler, so it needs to be
-          -- more flexible.)
-          => eff (Eff effs') a
-          -> (forall fs2. fs1 ^~ fs2 => a -> Context effs' effss' fs2 -> R fs2)
-          -> Context effs' effss' fs1 -> R fs1
+  { hTargets :: {-# UNPACK #-} (eff ': effs) :->> 'PROMPT eff effs i effss fs
+  , hSend :: forall effs'. Handling eff effs i effs' => eff (Eff effs') ~> Eff effs'
   , hCont :: forall fs'. fs ^~ fs' => i -> Context effs effss fs' -> R fs' }
 
 -- | The /target indirection vector/, which maps each effect in the row of effects to a particular
@@ -310,10 +301,6 @@ unsafeStrengthenTargetss :: effs :->>> f fs -> effs :->>> fs
 unsafeStrengthenTargetss = coerce
 {-# INLINE unsafeStrengthenTargetss #-}
 
--- | The /substitution vector/, which adds /another/ layer of indirection on top of the target
--- indirection vector. TODO: Explain more.
-newtype (fs :: FramesK) :=>> (fs' :: FramesK) = Substitution { unSubstitution :: ByteArray }
-
 runByteArray :: (forall s. ST s (MutableByteArray s)) -> ByteArray
 runByteArray m = runST (unsafeFreezeByteArray =<< m)
 {-# INLINE runByteArray #-}
@@ -326,49 +313,10 @@ rootFrames = Frames mempty
 -- noTargets = Targets mempty
 -- {-# INLINE noTargets #-}
 
-instance Category (:=>>) where
-  id = Substitution mempty
-  {-# INLINE id #-}
+weakenTargets :: forall fs fs' effs. fs :<<# fs' => effs :->> fs -> effs :->> fs'
+weakenTargets ts = subIndexValF @fs @fs' `seq` coerce ts
+{-# INLINE weakenTargets #-}
 
-  Substitution subst1 . Substitution subst2 = Substitution $ runByteArray do
-    let len2 = sizeofByteArray subst2
-    subst <- newByteArray len2
-    for_ [0,sIZEOF_INT..len2-sIZEOF_INT] \idx2 -> do
-      let idx1 = indexByteArray subst2 idx2
-          idx0 = indexByteArray subst1 (idx1 * sIZEOF_INT)
-      writeByteArray @Int subst idx2 idx0
-    pure subst
-
-emptySubstitution :: fs :=>> fs
-emptySubstitution = Substitution mempty
-{-# INLINE[1] emptySubstitution #-}
-
--- | Substitutions are only created by capturing up to a prompt, so the substitution in the root
--- frame must be empty.
-rootSubstitution :: 'ROOT r :=>> fs -> 'ROOT r :~: fs
-rootSubstitution !_ = axiom
-{-# INLINE rootSubstitution #-}
-
-substitute :: fs :=>> fs' -> Frames fs' -> effs :->> fs -> effs :->> fs'
-substitute (Substitution subst) (Frames fs) (Targets ts) = Targets $ runByteArray do
-  let !len_subst = sizeofByteArray subst `div` sIZEOF_INT
-      !len_fs = sizeofSmallArray fs
-      !len_ts = sizeofByteArray ts
-      !offset = len_fs - len_subst
-  ts' <- newByteArray len_ts
-  for_ [0,sIZEOF_INT..len_ts-sIZEOF_INT] \idx -> do
-    let t = indexByteArray ts idx
-    assertM $ t >= 0
-    assertM $ t < len_fs
-    writeByteArray ts' idx $ if t < len_subst
-      then indexByteArray subst (t * sIZEOF_INT)
-      else t + offset
-  pure ts'
-
--- weakenTargets :: fs :<<! fs' => effs :->> fs -> effs :->> fs'
--- weakenTargets = coerce
--- {-# INLINE weakenTargets #-}
---
 -- unsafeStrengthenTargets :: effs :->> f fs -> effs :->> fs
 -- unsafeStrengthenTargets = coerce
 -- {-# INLINE unsafeStrengthenTargets #-}
@@ -426,8 +374,19 @@ popFrame :: forall f fs. Frames (f fs) -> Frames fs
 popFrame (Frames fs) = Frames $ cloneSmallArray fs 0 (sizeofSmallArray fs - 1)
 {-# INLINE popFrame #-}
 
-indexFrame :: forall f fs fs'. f fs :<<# fs' => Frames fs' -> Frame f fs
-indexFrame (Frames fs) = unsafeCoerce $ indexSmallArray fs (subIndexValF @(f fs) @fs')
+indexFrame
+  :: forall f fs' r. f :<# fs'
+  => Frames fs'
+  -> (forall fs. f fs :<<# fs' => Proxy# fs -> Frame f fs -> r)
+  -> r
+indexFrame (Frames fs) fn =
+  ( let !idx = indexValF @f @fs' in
+    assert (idx >= 0)
+  $ assert (idx < sizeofSmallArray fs)
+    let !f = unsafeCoerce $ indexSmallArray fs idx in
+    withSubIndexF @(f fs) @fs' idx
+  $ fn @fs proxy# f
+  ) :: forall (fs :: FramesK). r
 {-# INLINE indexFrame #-}
 
 setFrame :: forall f fs fs'. f fs :<<# fs' => Frame f fs -> Frames fs' -> Frames fs'
@@ -503,8 +462,8 @@ instance Monad (Eff effs) where
   Eff m >>= f = Eff \k (ctx1 :: Context effs effss1 fs1) ->
     m (\a (ctx2 :: Context effs effss2 fs2) ->
         unEff (f a)
-              (\a (ctx3 :: Context effs effss3 fs3) ->
-                with (topsTrans @fs1 @fs2 @fs3) $ k a ctx3)
+              (\b (ctx3 :: Context effs effss3 fs3) ->
+                with (topsTrans @fs1 @fs2 @fs3) $ k b ctx3)
               ctx2)
       ctx1
   {-# INLINE (>>=) #-}
@@ -513,7 +472,6 @@ lift :: forall effs effs'. effs :<< effs' => Eff effs ~> Eff effs'
 lift (Eff m) = Eff \k (Context tss fs) ->
   let !ctx = Context (PushTargets (dropTargets $ peekTargets tss) tss) fs
   in m (\a (Context tss' fs') -> k a $! Context (popTargets tss') fs') ctx
-{-# INLINE lift #-}
 
 -- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
 -- behaviorally identical to just using 'lift', but the restricted type can produce better type
@@ -522,26 +480,21 @@ lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
 lift1 = lift
 {-# INLINE lift1 #-}
 
--- liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
--- liftH (Eff m) = Eff \k (Context tss' fs') ->
---   withHandling @eff @effs' (peekTargets tss') $
---     m _ _
---   withHandlingTargets' @eff ts' \(_ :: Proxy# fs) _ ts ->
---   with (eraseSub @('PROMPT eff i fs) @fs') $
---     m k (weakenTargets ts)
+liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
+liftH (Eff m) = Eff \k (Context tss fs :: Context effs' effss' fs') ->
+  withHandling @eff @effs' (peekTargets tss) \(_ :: Proxy# effss) ->
+  indexFrame @('PROMPT eff effs i effss) fs \_ h ->
+    let !ts = weakenTargets $ hTargets h
+        !ctx = Context (PushTargets ts tss) fs
+    in m (\a (Context tss' fs') -> k a $! Context (popTargets tss') fs') ctx
 
--- send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
--- send e = Eff \k ctx@(Context tss fs :: Context effs1 effss1 fs1) ->
---   with (handles e) $
---   lookupFrame (lookupTarget @eff $ peekTargets tss) fs \(_ :: Proxy# (f2 fs2)) h ->
---   withHandlesImpliesPrompt @eff @f2 \(_ :: Proxy# ('PROMPT eff effs2 i effss2)) ->
---   reflectHandling @eff @effs2 @i @effss2 @fs2 @effs @fs1 $
---     unEff (hSend h e) k ctx
-
-
-  -- let t = lookupTarget @eff $ peekTargets tss
-  -- in lookupFrame t fs \(_ :: Proxy# f) (_ :: Proxy# fs') h ->
-  --   with (handles e) $ withHandlesImpliesPrompt @eff @f $ hSend h e k ts fs
+send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
+send e = Eff \k ctx@(Context tss fs :: Context effs1 effss1 fs1) ->
+  with (handles e) $
+  lookupFrame (lookupTarget @eff $ peekTargets tss) fs \(_ :: Proxy# (f2 fs2)) h ->
+  withHandlesImpliesPrompt @eff @f2 \(_ :: Proxy# ('PROMPT eff effs2 i effss2)) ->
+  reflectHandling @eff @effs2 @i @effss2 @fs2 @effs @fs1 $
+    unEff (hSend h e) k ctx
 
 -- abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
 -- abort a = mkEff \(_ :: Proxy# fs') _ ts' fs' ->
@@ -608,91 +561,52 @@ lift1 = lift
 --     in m (\a fs' -> k a $! popFrame fs') ts' fs'
 
 class Handling (eff :: Effect) (effs :: [Effect]) (i :: Type) (effs' :: [Effect]) | eff effs' -> i effs where
-  reifyHandling :: HandlingDict eff effs i effs'
+  handlerIndexVal :: Int
 
-data HandlingDict eff effs i effs' = forall effss fs. Handling
-  { handlerTargetss :: {-# UNPACK #-} ((eff ': effs) ': effss) :->>> 'PROMPT eff effs i effss fs }
-
--- withHandling
---   :: forall eff effs' fs effs i effss r. Handling eff effs i effs'
---   => effs' :->> fs -> ('PROMPT eff effs i effss :<# fs => r) -> r
--- withHandling !_ = withIndexF @('PROMPT eff effs i effss) @fs (handlerIndexVal @eff @effs @i @effs')
--- {-# INLINE withHandling #-}
+withHandling
+  :: forall eff effs' fs effs i r
+   . Handling eff effs i effs'
+  => effs' :->> fs
+  -- ^ Not actually used, but serves as a proof that we’re in a context where the 'Handling'
+  -- constraint applies.
+  -> (forall effss. 'PROMPT eff effs i effss :<# fs => Proxy# effss -> r)
+  -> r
+withHandling !_ f =
+  ( withIndexF @('PROMPT eff effs i effss) @fs (handlerIndexVal @eff @effs @i @effs')
+  $ f @effss proxy#
+  ) :: forall (effss :: [[Effect]]). r
+{-# INLINE withHandling #-}
 
 newtype WithHandling eff effs i effs' r = WithHandling (Handling eff effs i effs' => r)
-reflectHandling
-  :: forall eff effs i effs' r
-   . HandlingDict eff effs i effs'
-  -> (Handling eff effs i effs' => r)
-  -> r
-reflectHandling d x = unsafeCoerce (WithHandling @eff @effs @i @effs' x) $! d
-{-# INLINE reflectHandling #-}
+reflectHandlerIndex :: forall eff effs i effs' r. Int -> (Handling eff effs i effs' => r) -> r
+reflectHandlerIndex n x = unsafeCoerce (WithHandling @eff @effs @i @effs' x) $! n
+{-# INLINE reflectHandlerIndex #-}
 
--- reflectHandling
---   :: forall eff effs i effss fs effs' fs' r. 'PROMPT eff effs i effss fs :<<# fs'
---   => (Handling eff effs i effs' => r) -> r
--- reflectHandling =
---   reflectHandlerIndex @eff @effs @i @effs' (subIndexValF @('PROMPT eff effs i effss fs) @fs')
--- {-# INLINE reflectHandling #-}
+reflectHandling
+  :: forall eff effs i effss fs effs' fs' r. 'PROMPT eff effs i effss fs :<<# fs'
+  => (Handling eff effs i effs' => r) -> r
+reflectHandling =
+  reflectHandlerIndex @eff @effs @i @effs' (subIndexValF @('PROMPT eff effs i effss fs) @fs')
+{-# INLINE reflectHandling #-}
 
 handle
   :: forall eff a effs. Handles eff
   => (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
   -> Eff (eff ': effs) a
   -> Eff effs a
-handle f (Eff m) = Eff \k0 (Context tss0 fs0 :: Context effs effss fs) -> withLengthOf fs0
-  let k1 :: forall fs1. 'PROMPT eff effs a effss fs ^~ fs1
-         => a -> Context (eff ': effs) (effs ': effss) fs1 -> R fs1
-      k1 a (Context tss2 fs2) = case topsEq @('PROMPT eff effs a effss fs) @fs1 of
-        TopsFrame ->
+handle f (Eff m) = Eff \k0 (Context tss0 fs0 :: Context effs effss0 fs0) -> withLengthOf fs0
+  let k2 :: forall fs2. 'PROMPT eff effs a effss0 fs0 ^~ fs2
+         => a -> Context (eff ': effs) (effs ': effss0) fs2 -> R fs2
+      k2 a (Context tss2 fs2) =
+        withTopFramesEq @('PROMPT eff effs a effss0) @fs0 @fs2
           -- TODO: Explain why this is safe here but nowhere else!
           let tss2' = unsafeStrengthenTargetss $ popTargets tss2
           in hCont (peekFrame fs2) a $! Context tss2' (popFrame fs2)
 
-      f' :: forall effs1 effss1 fs1 b
-          . 'PROMPT eff effs a effss :<# fs1
-         => eff (Eff effs1) b
-         -> (forall fs2. fs1 ^~ fs2 => b -> Context effs1 effss1 fs2 -> R fs2)
-         -> Context effs1 effss1 fs1 -> R fs1
-      f' e k2 ctx2@(Context tss2 fs2) =
-        reflectHandling (Handling @eff @effs @a @effs1 @effss1 @fs1 _) $
-          unEff (f e) k2 ctx2
-
       !tss0' = weakenTargetss tss0
-      !ts1 = pushTarget (newTarget @('PROMPT eff effs a effss)) $ peekTargets tss0'
-      !fs1 = pushFrame @('PROMPT eff effs a effss) (Handler f' k0) fs0
-  in m k1 $! Context (PushTargets ts1 tss0') fs1
-
-  -- withLengthOf fs0 $
-  -- with (weakenSub @fs @('PROMPT eff a) @fs)
-  --   let k2 :: a -> Frames ('PROMPT eff a fs) -> R fs
-  --       k2 a fs2 = hCont (peekFrame fs2) a $! popFrame fs2
-  --
-  --       -- TODO: make Target construction safer
-  --       !idx = sizeofSmallArray $ unFrames fs0
-  --       !ts1 = pushTarget (Target idx) (weakenTargets ts0)
-  --
-  --       f' :: forall effs' fs' b. Holds ('PROMPT eff a fs :<<! fs') => eff (Eff effs') b
-  --          -> (b -> Frames fs' -> R fs') -> effs' :->> fs' -> Frames fs' -> R fs'
-  --       f' e k ts =
-  --         attachSub @('PROMPT eff a fs) @fs' $
-  --         withHandling @eff @effs @a @effs'
-  --           (WithHandlingTargets \(_ :: Proxy# fs'') g ->
-  --             -- `fs' :<<! fs''` must hold, because in the type signature for `handle`, `effs'` is a
-  --             -- skolem! Therefore, the only way `effs' :->>! fs''` could ever be satisfied is if an
-  --             -- `effs' :->> fs''` were constructed from the `ts` we receive here, which must be a
-  --             -- subcomputation of `f e`.
-  --             --
-  --             -- This is really the essence of what a 'Handling' constraint means, and this axiom is
-  --             -- the linchpin that makes everything work.
-  --             with (axiomC @(fs' :<<! fs'')) $
-  --             transAttachSub @('PROMPT eff a fs) @fs' @fs'' $
-  --             -- TODO: could make ts0 a slice into ts1 instead of a separate array to save a small
-  --             -- bit of memory
-  --             g proxy# ts0 ts1)
-  --           (unEff (f e) k ts)
-  --
-  --   in m k2 ts1 $! pushFrame (Handler @eff f' k0) fs0
+      !ts1 = pushTarget (newTarget @('PROMPT eff effs a effss0)) $ peekTargets tss0'
+      !fs1 = pushFrame @('PROMPT eff effs a effss0) (Handler ts1 f k0) fs0
+  in m k2 $! Context (PushTargets ts1 tss0') fs1
 
 -- class Swizzle effs effs' where
 --   swizzleTargets :: effs' :->> fs -> effs :->> fs
