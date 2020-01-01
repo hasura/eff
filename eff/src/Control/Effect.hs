@@ -34,6 +34,9 @@ module Control.Effect
   , tell
   , listen
   , censor
+  , runWriter
+  -- , evalWriter
+  -- , execWriter
 
   , NonDet(..)
   , runNonDetAll
@@ -43,12 +46,15 @@ module Control.Effect
   ) where
 
 import Control.Applicative
+import Control.Category ((>>>))
 import Control.Natural (type (~>))
 import Data.Bool (bool)
 import Data.Function
 import Data.Tuple (swap)
 
 import Control.Effect.Internal
+
+import Debug.Trace
 
 data Error e :: Effect where
   Throw :: e -> Error e m a
@@ -101,11 +107,11 @@ modify f = get >>= put . f
 {-# INLINE modify #-}
 
 evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
-evalState s0 m = swizzle m
-  & handle @(State s) \case
-      Get -> liftH @(State s) getC
-      Put s -> liftH @(State s) (putC $! s)
-  & runCell s0
+evalState s0 = swizzle
+  >>> handle @(State s) \case
+        Get -> liftH @(State s) getC
+        Put s -> liftH @(State s) (putC $! s)
+  >>> runCell s0
 
 runState :: forall s a effs. s -> Eff (State s ': effs) a -> Eff effs (s, a)
 runState s m = evalState s (curry swap <$> m <*> get)
@@ -129,6 +135,41 @@ listen = send . Listen
 censor :: Writer w :< effs => (w -> w) -> Eff (Writer w ': effs) a -> Eff effs a
 censor a b = send $ Censor a b
 {-# INLINE censor #-}
+
+runWriter :: forall w effs a. (Monoid w, Show w) => Eff (Writer w ': effs) a -> Eff effs (w, a)
+runWriter = swizzle
+  >>> handle \case
+        Tell w -> liftH @(Writer w) $ trace ("outer tell: " <> show w) $ tellS w
+        Listen m -> runListen m
+        Censor f m -> runCensor f m
+  >>> runState @w mempty
+  where
+    tellS :: State w :< effs' => w -> Eff effs' ()
+    tellS w = get >>= \ws -> trace ("tellS: " <> show ws <> " <> " <> show w) (put $! (ws <> w))
+
+    runListen :: forall effs1 i effs2 b. Handling (Writer w) effs1 i effs2
+              => Eff (Writer w ': effs2) b -> Eff effs2 (w, b)
+    runListen = swizzle
+      >>> handle @(Writer w) \case
+            Tell w -> liftH @(Writer w) do
+              tellS w
+              lift @effs2 $ liftH @(Writer w) $ tell w
+            Listen m -> runListen m
+            Censor f m -> runCensor f m
+      >>> runState @w mempty
+
+    runCensor :: forall effs1 i effs2. Handling (Writer w) effs1 i effs2
+              => (w -> w) -> Eff (Writer w ': effs2) ~> Eff effs2
+    runCensor f = handle @(Writer w) \case
+      Tell w -> liftH @(Writer w) $ lift1 $ liftH @(Writer w) (tell $! f w)
+      Listen m -> runListen m
+      Censor g m -> runCensor g m
+
+-- evalWriter :: forall w effs. Monoid w => Eff (Writer w ': effs) ~> Eff effs
+-- evalWriter = fmap snd . runWriter
+--
+-- execWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs w
+-- execWriter = fmap fst . runWriter
 
 data NonDet :: Effect where
   Empty :: NonDet m a

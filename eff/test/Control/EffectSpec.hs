@@ -3,6 +3,8 @@ module Control.EffectSpec (spec) where
 import Control.Applicative
 import Control.Monad
 import Data.Foldable
+import Data.Functor
+import Data.Monoid (Sum(..))
 import Test.Hspec
 
 import Control.Effect
@@ -74,3 +76,18 @@ spec = do
               b <- (throw () <|> pure True) `catch` \() -> pure False
               pure $ not b
         results `shouldBe` Right [True, False]
+
+    describe "listen over (<|>)" $ do
+      let go :: (NonDet :< effs, Writer (Sum Integer) :< effs) => Eff effs ((Sum Integer), Bool)
+          go = listen (add 1 $> True <|> add 2 $> False)
+            where add = tell . Sum @Integer
+
+      context "Writer has local semantics relative to Alternative" $ do
+        it "returns output from each choice" $ do
+          let results = run $ runNonDetAll $ runWriter @(Sum Integer) go
+          results `shouldBe` [(Sum 1, (Sum 1, True)), (Sum 2, (Sum 2, False))]
+
+      context "Writer has global semantics relative to Alternative" $ do
+        it "returns output from each choice and sums the result" $ do
+          let results = run $ runWriter @(Sum Integer) $ runNonDetAll go
+          results `shouldBe` (Sum 3, [(Sum 1, True), (Sum 2, False)])
