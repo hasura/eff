@@ -16,10 +16,22 @@ source-repository head
   type: git
   location: https://github.com/hasura/eff
 
+flag debug
+  description:
+    Enables some additional internal consistency checking at the cost of a small performance
+    overhead. This may be useful if you find yourself getting segfaults or similarly dire badness,
+    but is otherwise unlikely to be helpful.
+  default: False
+  manual: True
+
 common common
   ghc-options:
     -flate-specialise
     -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+
+  if flag(debug)
+    ghc-options: -fno-ignore-asserts -falignment-sanitisation -fcatch-bottoms
+    cpp-options: -DEFF_DEBUG
 
   build-depends:
     , base >=4.12 && <5
@@ -45,6 +57,7 @@ library
   exposed-modules:
     Control.Effect
     Control.Effect.Internal
+    Control.Effect.Internal.Debug
 
 test-suite eff-tests
   import: common

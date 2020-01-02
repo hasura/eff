@@ -23,6 +23,8 @@ import GHC.Exts (Any, Int#, Proxy#, proxy#)
 import GHC.TypeLits (ErrorMessage(..), Nat, TypeError)
 import Unsafe.Coerce (unsafeCoerce)
 
+import Control.Effect.Internal.Debug
+
 class With a where
   type WithC a :: Constraint
   with :: a -> (WithC a => r) -> r
@@ -42,10 +44,6 @@ type Proof = (:~:) (() :: Constraint)
 axiomC :: forall a. Proof a
 axiomC = axiom
 {-# INLINE axiomC #-}
-
-assertM :: Applicative m => Bool -> m ()
-assertM b = assert b $ pure ()
-{-# INLINE assertM #-}
 
 type Effect = (Type -> Type) -> Type -> Type
 
@@ -134,8 +132,8 @@ decomposeCell = axiom
 {-# INLINE decomposeCell #-}
 
 -- | If one 'FramesK' is contained within the other, their roots must be equal.
-rootsEq :: hs :<<! hs' => R hs :~: R hs'
-rootsEq = axiom
+rootsEq :: forall fs fs'. fs :<<# fs' => R fs :~: R fs'
+rootsEq = subIndexValF @fs @fs' `seq` axiom
 {-# INLINE rootsEq #-}
 
 class (eff :: Effect) :< (effs :: [Effect]) where
@@ -264,8 +262,20 @@ type family Frame f fs where
   Frame ('CELL s) _ = s
   Frame ('PROMPT eff effs i effss) fs = Handler eff effs i effss fs
 
+-- | A slice of a stack of 'Frames'. @fs@ must be a subset of @fs'@, and the captured frames include
+-- all the frames in @fs'@ that are /not/ in @fs@. The first frame included in the capture is @f@,
+-- which in practice is always a 'PROMPT' and is used to ensure the captured frames are restored
+-- onto a stack of the appropriate shape.
+data CapturedFrames (f :: FrameK) (fs :: FramesK) (fs' :: FramesK)
+  = f fs :<<# fs' => CapturedFrames { unCapturedFrames :: {-# UNPACK #-} SmallArray Any }
+
+firstCapturedFrame :: CapturedFrames f fs fs' -> Frame f fs
+firstCapturedFrame (CapturedFrames fs) = unsafeCoerce $ indexSmallArray fs 0
+{-# INLINE firstCapturedFrame #-}
+
 data Handler eff effs i effss fs = Handler
   { hTargets :: {-# UNPACK #-} (eff ': effs) :->> 'PROMPT eff effs i effss fs
+  , hTargetss :: (effs ': effss) :->>> fs
   , hSend :: forall effs'. Handling eff effs i effs' => eff (Eff effs') ~> Eff effs'
   , hCont :: forall fs'. fs ^~ fs' => i -> Context effs effss fs' -> R fs' }
 
@@ -287,19 +297,103 @@ newtype (effs :: [Effect]) :->> (fs :: FramesK) = Targets { unTargets :: ByteArr
 newtype (eff :: Effect) :-> (fs :: FramesK) = Target { unTarget :: Int }
 
 data effss :->>> fs where
-  RootTargets :: '[ '[]] :->>> fs
-  PushTargets ::
-    { peekTargets :: {-# UNPACK #-} effs :->> fs
-    , popTargets :: effss :->>> fs
-    } -> (effs ': effss) :->>> fs
+  RootTargets :: {-# UNPACK #-} effs :->> fs -> '[effs] :->>> fs
+  PushTargets :: {-# UNPACK #-} effs :->> fs -> effss :->>> fs -> (effs ': effss) :->>> fs
+
+peekTargets :: (effs ': effss) :->>> fs -> effs :->> fs
+peekTargets = \case
+  RootTargets ts -> ts
+  PushTargets ts _ -> ts
+{-# INLINE peekTargets #-}
+
+popTargets :: (effs ': effs' ': effss) :->>> fs -> (effs' ': effss) :->>> fs
+popTargets (PushTargets _ tss) = tss
+{-# INLINE popTargets #-}
 
 weakenTargetss :: fs :<<# fs' => effss :->>> fs -> effss :->>> fs'
 weakenTargetss = coerce
 {-# INLINE weakenTargetss #-}
 
-unsafeStrengthenTargetss :: effs :->>> f fs -> effs :->>> fs
-unsafeStrengthenTargetss = coerce
-{-# INLINE unsafeStrengthenTargetss #-}
+-- unsafeStrengthenTargetss :: effs :->>> f fs -> effs :->>> fs
+-- unsafeStrengthenTargetss = coerce
+-- {-# INLINE unsafeStrengthenTargetss #-}
+
+-- | A /substitution vector/, which serves as a mapping from @fs@ to @fs'@. This is used when
+-- restoring a captured continuation onto a new set of frames to fixup to the captured target
+-- indirection vector. It can be applied with 'substitute'.
+--
+-- The representation is an array @mapping@ of 'Int's of length /n/ <= @'Length' fs@ such that
+-- @mapping[/idx/] = /idx'/@, where @/idx/@ and @/idx'/@ are indexes into @'Frames' fs@ and
+-- @'Frames' fs'@, respectively. Values of @/idx/@ >= /n/ correspond to frames that are in the
+-- captured continuation itself and therefore have not changed, but instead need to be adjusted by a
+-- constant offset @'Length' fs'@ - @'Length' fs@.
+data (fs :: FramesK) :=>> (fs' :: FramesK) = Substitution
+  { substitutionMapping :: {-# UNPACK #-} ByteArray
+  , substitutionOffset :: {-# UNPACK #-} Int }
+
+-- instance Category (:=>>) where
+--   id = Substitution mempty
+--   {-# INLINE id #-}
+--
+--   Substitution subst1 . Substitution subst2 = Substitution $ runByteArray do
+--     let len2 = sizeofByteArray subst2
+--     subst <- newByteArray len2
+--     for_ [0,sIZEOF_INT..len2-sIZEOF_INT] \idx2 -> do
+--       let idx1 = indexByteArray subst2 idx2
+--           idx0 = indexByteArray subst1 (idx1 * sIZEOF_INT)
+--       writeByteArray @Int subst idx2 idx0
+--     pure subst
+
+mkSubstitution
+  :: forall eff effs i effss fs1 fs2 fs3. Length fs3
+  => CapturedFrames ('PROMPT eff effs i effss) fs1 fs2
+  -> effs :->> fs3
+  -> fs2 :=>> fs3
+mkSubstitution fs@(CapturedFrames _) (Targets ts2) =
+  let len1 = subIndexValF @('PROMPT eff effs i effss fs1) @fs2
+      len2 = lengthVal @fs3
+  in Substitution
+  { substitutionOffset = len2 - len1
+  , substitutionMapping = runByteArray do
+      -- Why do we return an `fs2 :=>> fs3` even though we only look at the targets for `effs`, aka
+      -- `fs1`? The answer is that `effs :->> fs1` fundamentally must cover all the effects visible
+      -- to more nested computations (that aren’t introduced locally within the captured
+      -- continuation itself), because those computations are contained within an `Eff (eff ':
+      -- effs)` computation.
+      --
+      -- The substitution vector we build therefore contains “holes” for
+      let Targets ts1 = peekTargets $ hTargetss $ firstCapturedFrame fs
+          len_ts = sizeofByteArray ts1
+      assertM $ len_ts == sizeofByteArray ts2
+      mapping <- newByteArray len1
+      -- When the `debug` flag is set, fill `mapping` with negative values so `substitute` can raise
+      -- an assertion error if we ever try to access an element that would otherwise be
+      -- uninitialized.
+      when debugEnabled $ for_ [0,sIZEOF_INT..len1-sIZEOF_INT] \idx ->
+        writeByteArray @Int mapping idx (-1)
+      for_ [0,sIZEOF_INT..len_ts-sIZEOF_INT] \idx -> do
+        let t1 = indexByteArray @Int ts1 idx
+            t2 = indexByteArray @Int ts2 idx
+        writeByteArray mapping t1 t2
+      pure mapping
+  }
+
+
+-- substitute :: fs :=>> fs' -> Frames fs' -> effs :->> fs -> effs :->> fs'
+-- substitute (Substitution subst) (Frames fs) (Targets ts) = Targets $ runByteArray do
+--   let !len_subst = sizeofByteArray subst `div` sIZEOF_INT
+--       !len_fs = sizeofSmallArray fs
+--       !len_ts = sizeofByteArray ts
+--       !offset = len_fs - len_subst
+--   ts' <- newByteArray len_ts
+--   for_ [0,sIZEOF_INT..len_ts-sIZEOF_INT] \idx -> do
+--     let t = indexByteArray ts idx
+--     assertM $ t >= 0
+--     assertM $ t < len_fs
+--     writeByteArray ts' idx $ if t < len_subst
+--       then indexByteArray subst (t * sIZEOF_INT)
+--       else t + offset
+--   pure ts'
 
 runByteArray :: (forall s. ST s (MutableByteArray s)) -> ByteArray
 runByteArray m = runST (unsafeFreezeByteArray =<< m)
@@ -309,9 +403,9 @@ rootFrames :: Frames ('ROOT r)
 rootFrames = Frames mempty
 {-# INLINE rootFrames #-}
 
--- noTargets :: '[] :->> fs
--- noTargets = Targets mempty
--- {-# INLINE noTargets #-}
+noTargets :: '[] :->> fs
+noTargets = Targets mempty
+{-# INLINE noTargets #-}
 
 weakenTargets :: forall fs fs' effs. fs :<<# fs' => effs :->> fs -> effs :->> fs'
 weakenTargets ts = subIndexValF @fs @fs' `seq` coerce ts
@@ -445,7 +539,7 @@ replaceFrame (Target t) (Frames fs) f =
 run :: forall a. Eff '[] a -> a
 run (Eff m) = m
   (\v (_ :: Context '[] effss fs) -> with (topsRoot @a @fs) v)
-  (Context RootTargets rootFrames)
+  (Context (RootTargets noTargets) rootFrames)
 {-# INLINE run #-}
 
 instance Functor (Eff effs) where
@@ -470,6 +564,9 @@ instance Monad (Eff effs) where
 
 lift :: forall effs effs'. effs :<< effs' => Eff effs ~> Eff effs'
 lift (Eff m) = Eff \k (Context tss fs) ->
+  -- Note: we could save some allocation and residency here by representing targets as a byte array
+  -- + an offset, where 'lift' simply increments the offset (and returning decrements it). However,
+  -- it isn’t clear whether or not that’s a win without benchmarking.
   let !ctx = Context (PushTargets (dropTargets $ peekTargets tss) tss) fs
   in m (\a (Context tss' fs') -> k a $! Context (popTargets tss') fs') ctx
 
@@ -496,17 +593,29 @@ send e = Eff \k ctx@(Context tss fs :: Context effs1 effss1 fs1) ->
   reflectHandling @eff @effs2 @i @effss2 @fs2 @effs @fs1 $
     unEff (hSend h e) k ctx
 
--- abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
--- abort a = mkEff \(_ :: Proxy# fs') _ ts' fs' ->
---   withHandlingTargets' @eff ts' \(_ :: Proxy# fs) _ _ ->
---   with (eraseSub @('PROMPT eff i fs) @fs') $
---   with (rootsEq @('PROMPT eff i fs) @fs') $
---   withWeakenSubIndex @('PROMPT eff i) @fs @fs' $
---     hCont (indexFrame @('PROMPT eff i fs) fs') a $! takeFrames @fs fs'
---
+abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
+abort a = Eff \_ (Context tss (fs :: Frames fs')) ->
+  withHandling @eff @effs' (peekTargets tss) \(_ :: Proxy# effss) ->
+  indexFrame @('PROMPT eff effs i effss) fs \(_ :: Proxy# fs) h ->
+  withWeakenSubIndex @('PROMPT eff effs i effss) @fs @fs' $
+  with (rootsEq @fs @fs') $
+    hCont h a $! Context (hTargetss h) (takeFrames fs)
+
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
 --   => ((a -> Eff effs i) -> Eff effs i) -> Eff effs' a
+-- shift f = Eff \kn (Context tssn fsn :: Context effsn effssn fsn) ->
+--   withHandling @eff @effs' (peekTargets tssn) \(_ :: Proxy# effss0) ->
+--   indexFrame @('PROMPT eff effs i effss0) fsn \(_ :: Proxy# fs0) !h0 ->
+--   withWeakenSubIndex @('PROMPT eff effs i effss0) @fs0 @fsn $
+--   with (rootsEq @fs0 @fsn)
+--     let m :: Eff effs i
+--         m = f \a -> Eff \k1 (Context tss1 fs1 :: Context effs1 effss1 fs1) ->
+--           -- If we get here, it’s time to do the continuation dance. We start by copying the local
+--           -- frames from the captured continuation onto the current stack.
+--           _
+--     in unEff m (hCont h0) $! Context (hTargetss h0) (takeFrames fsn)
+
 -- shift f = mkEff \(_ :: Proxy# fsn) kn tsn fsn ->
 --   withHandlingTargets' @eff tsn \(_ :: Proxy# fs0) ts0 _ ->
 --   with (eraseSub @('PROMPT eff i fs0) @fsn) $
@@ -596,17 +705,15 @@ handle
   -> Eff effs a
 handle f (Eff m) = Eff \k0 (Context tss0 fs0 :: Context effs effss0 fs0) -> withLengthOf fs0
   let k2 :: forall fs2. 'PROMPT eff effs a effss0 fs0 ^~ fs2
-         => a -> Context (eff ': effs) (effs ': effss0) fs2 -> R fs2
-      k2 a (Context tss2 fs2) =
-        withTopFramesEq @('PROMPT eff effs a effss0) @fs0 @fs2
-          -- TODO: Explain why this is safe here but nowhere else!
-          let tss2' = unsafeStrengthenTargetss $ popTargets tss2
-          in hCont (peekFrame fs2) a $! Context tss2' (popFrame fs2)
+         => a -> Context (eff ': effs) '[] fs2 -> R fs2
+      k2 a (Context tss2 fs2) = withTopFramesEq @('PROMPT eff effs a effss0) @fs0 @fs2
+        let !h2 = peekFrame fs2
+        in hCont h2 a $! Context (hTargetss h2) (popFrame fs2)
 
       !tss0' = weakenTargetss tss0
       !ts1 = pushTarget (newTarget @('PROMPT eff effs a effss0)) $ peekTargets tss0'
-      !fs1 = pushFrame @('PROMPT eff effs a effss0) (Handler ts1 f k0) fs0
-  in m k2 $! Context (PushTargets ts1 tss0') fs1
+      !fs1 = pushFrame @('PROMPT eff effs a effss0) (Handler ts1 tss0 f k0) fs0
+  in m k2 $! Context (RootTargets ts1) fs1
 
 -- class Swizzle effs effs' where
 --   swizzleTargets :: effs' :->> fs -> effs :->> fs
