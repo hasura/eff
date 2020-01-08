@@ -4,6 +4,10 @@ module Control.Effect.Internal.Debug where
 
 import Control.Exception (assert)
 
+#ifdef EFF_DEBUG
+import GHC.Stack (HasCallStack)
+#endif
+
 debugEnabled :: Bool
 #ifdef EFF_DEBUG
 debugEnabled = True
@@ -12,6 +16,12 @@ debugEnabled = False
 #endif
 {-# INLINE debugEnabled #-}
 
-assertM :: Applicative m => Bool -> m ()
+#ifdef EFF_DEBUG
+type DebugCallStack = HasCallStack
+#else
+type DebugCallStack = () :: Constraint
+#endif
+
+assertM :: (DebugCallStack, Applicative m) => Bool -> m ()
 assertM b = assert b $ pure ()
 {-# INLINE assertM #-}

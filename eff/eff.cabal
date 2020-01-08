@@ -58,6 +58,7 @@ library
     Control.Effect
     Control.Effect.Internal
     Control.Effect.Internal.Debug
+    Control.Effect.Internal.PrimArray
 
 test-suite eff-tests
   import: common

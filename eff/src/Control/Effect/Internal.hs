@@ -10,13 +10,10 @@ module Control.Effect.Internal where
 
 import Control.Exception (assert)
 import Control.Monad
-import Control.Monad.ST
 import Control.Natural (type (~>))
 import Data.Coerce
 import Data.Kind (Constraint, Type)
-import Data.Primitive.ByteArray
 import Data.Primitive.SmallArray
-import Data.Primitive.MachDeps (sIZEOF_INT)
 import Data.Foldable
 import Data.Type.Equality ((:~:)(..))
 import GHC.Exts (Any, Int#, Proxy#, proxy#)
@@ -24,6 +21,7 @@ import GHC.TypeLits (ErrorMessage(..), Nat, TypeError)
 import Unsafe.Coerce (unsafeCoerce)
 
 import Control.Effect.Internal.Debug
+import Control.Effect.Internal.PrimArray
 
 class With a where
   type WithC a :: Constraint
@@ -293,12 +291,18 @@ data Handler eff effs i effss fs = Handler
 -- of @effs@ is always stored at index @0@. This is convenient because it allows indexes into the
 -- array to be more easily calculated at compile-time from the type information, and it isn’t
 -- important that the indexes be dynamically stable in the same way it is for 'Frames'.
-newtype (effs :: [Effect]) :->> (fs :: FramesK) = Targets { unTargets :: ByteArray }
+newtype (effs :: [Effect]) :->> (fs :: FramesK) = Targets { unTargets :: PrimArray Int }
 newtype (eff :: Effect) :-> (fs :: FramesK) = Target { unTarget :: Int }
+
+newtype (effs :: [Effect]) :=>> (effs' :: [Effect]) = Mapping { unMapping :: PrimArray Int }
 
 data effss :->>> fs where
   RootTargets :: {-# UNPACK #-} effs :->> fs -> '[effs] :->>> fs
-  PushTargets :: {-# UNPACK #-} effs :->> fs -> effss :->>> fs -> (effs ': effss) :->>> fs
+  RemapTargets
+    :: {-# UNPACK #-} effs :->> fs
+    -> {-# UNPACK #-} effs :=>> effs'
+    -> (effs' ': effss) :->>> fs
+    -> (effs ': effs' ': effss) :->>> fs
 
 peekTargets :: (effs ': effss) :->>> fs -> effs :->> fs
 peekTargets = \case
@@ -317,87 +321,6 @@ weakenTargetss = coerce
 -- unsafeStrengthenTargetss :: effs :->>> f fs -> effs :->>> fs
 -- unsafeStrengthenTargetss = coerce
 -- {-# INLINE unsafeStrengthenTargetss #-}
-
--- | A /substitution vector/, which serves as a mapping from @fs@ to @fs'@. This is used when
--- restoring a captured continuation onto a new set of frames to fixup to the captured target
--- indirection vector. It can be applied with 'substitute'.
---
--- The representation is an array @mapping@ of 'Int's of length /n/ <= @'Length' fs@ such that
--- @mapping[/idx/] = /idx'/@, where @/idx/@ and @/idx'/@ are indexes into @'Frames' fs@ and
--- @'Frames' fs'@, respectively. Values of @/idx/@ >= /n/ correspond to frames that are in the
--- captured continuation itself and therefore have not changed, but instead need to be adjusted by a
--- constant offset @'Length' fs'@ - @'Length' fs@.
-data (fs :: FramesK) :=>> (fs' :: FramesK) = Substitution
-  { substitutionMapping :: {-# UNPACK #-} ByteArray
-  , substitutionOffset :: {-# UNPACK #-} Int }
-
--- instance Category (:=>>) where
---   id = Substitution mempty
---   {-# INLINE id #-}
---
---   Substitution subst1 . Substitution subst2 = Substitution $ runByteArray do
---     let len2 = sizeofByteArray subst2
---     subst <- newByteArray len2
---     for_ [0,sIZEOF_INT..len2-sIZEOF_INT] \idx2 -> do
---       let idx1 = indexByteArray subst2 idx2
---           idx0 = indexByteArray subst1 (idx1 * sIZEOF_INT)
---       writeByteArray @Int subst idx2 idx0
---     pure subst
-
-mkSubstitution
-  :: forall eff effs i effss fs1 fs2 fs3. Length fs3
-  => CapturedFrames ('PROMPT eff effs i effss) fs1 fs2
-  -> effs :->> fs3
-  -> fs2 :=>> fs3
-mkSubstitution fs@(CapturedFrames _) (Targets ts2) =
-  let len1 = subIndexValF @('PROMPT eff effs i effss fs1) @fs2
-      len2 = lengthVal @fs3
-  in Substitution
-  { substitutionOffset = len2 - len1
-  , substitutionMapping = runByteArray do
-      -- Why do we return an `fs2 :=>> fs3` even though we only look at the targets for `effs`, aka
-      -- `fs1`? The answer is that `effs :->> fs1` fundamentally must cover all the effects visible
-      -- to more nested computations (that aren’t introduced locally within the captured
-      -- continuation itself), because those computations are contained within an `Eff (eff ':
-      -- effs)` computation.
-      --
-      -- The substitution vector we build therefore contains “holes” for
-      let Targets ts1 = peekTargets $ hTargetss $ firstCapturedFrame fs
-          len_ts = sizeofByteArray ts1
-      assertM $ len_ts == sizeofByteArray ts2
-      mapping <- newByteArray len1
-      -- When the `debug` flag is set, fill `mapping` with negative values so `substitute` can raise
-      -- an assertion error if we ever try to access an element that would otherwise be
-      -- uninitialized.
-      when debugEnabled $ for_ [0,sIZEOF_INT..len1-sIZEOF_INT] \idx ->
-        writeByteArray @Int mapping idx (-1)
-      for_ [0,sIZEOF_INT..len_ts-sIZEOF_INT] \idx -> do
-        let t1 = indexByteArray @Int ts1 idx
-            t2 = indexByteArray @Int ts2 idx
-        writeByteArray mapping t1 t2
-      pure mapping
-  }
-
-
--- substitute :: fs :=>> fs' -> Frames fs' -> effs :->> fs -> effs :->> fs'
--- substitute (Substitution subst) (Frames fs) (Targets ts) = Targets $ runByteArray do
---   let !len_subst = sizeofByteArray subst `div` sIZEOF_INT
---       !len_fs = sizeofSmallArray fs
---       !len_ts = sizeofByteArray ts
---       !offset = len_fs - len_subst
---   ts' <- newByteArray len_ts
---   for_ [0,sIZEOF_INT..len_ts-sIZEOF_INT] \idx -> do
---     let t = indexByteArray ts idx
---     assertM $ t >= 0
---     assertM $ t < len_fs
---     writeByteArray ts' idx $ if t < len_subst
---       then indexByteArray subst (t * sIZEOF_INT)
---       else t + offset
---   pure ts'
-
-runByteArray :: (forall s. ST s (MutableByteArray s)) -> ByteArray
-runByteArray m = runST (unsafeFreezeByteArray =<< m)
-{-# INLINE runByteArray #-}
 
 rootFrames :: Frames ('ROOT r)
 rootFrames = Frames mempty
@@ -428,37 +351,21 @@ newTarget = Target $ indexValF @f @fs
 {-# INLINE newTarget #-}
 
 lookupTarget :: forall eff effs fs. eff :< effs => effs :->> fs -> eff :-> fs
-lookupTarget (Targets ts) = Target $ indexByteArray ts (indexVal @eff @effs)
+lookupTarget (Targets ts) = Target $ indexPrimArray ts (indexVal @eff @effs)
 
 pushTarget :: forall eff effs fs. eff :-> fs -> effs :->> fs -> (eff ': effs) :->> fs
-pushTarget (Target t) (Targets ts) = Targets $ runByteArray do
-  let len = sizeofByteArray ts
-  assertM $ len >= 0
-  assertM $ (len `mod` sIZEOF_INT) == 0
-  ts' <- newByteArray (len + sIZEOF_INT)
-  writeByteArray ts' 0 t
-  copyByteArray ts' sIZEOF_INT ts 0 len
+pushTarget (Target t) (Targets ts) = Targets $ runPrimArray do
+  let len = sizeofPrimArray ts
+  ts' <- newPrimArray (len + 1)
+  writePrimArray ts' 0 t
+  copyPrimArray ts' 1 ts 0 len
   pure ts'
 
 popTarget :: forall eff effs fs. (eff ': effs) :->> fs -> effs :->> fs
-popTarget (Targets ts) = Targets $ runByteArray do
-  let len = sizeofByteArray ts - sIZEOF_INT
-  assertM $ len >= 0
-  assertM $ (len `mod` sIZEOF_INT) == 0
-  ts' <- newByteArray len
-  copyByteArray ts' 0 ts sIZEOF_INT len
-  pure ts'
+popTarget (Targets ts) = Targets $ clonePrimArray ts 1 (sizeofPrimArray ts)
 
 dropTargets :: forall effs effs' fs. effs :<< effs' => effs' :->> fs -> effs :->> fs
-dropTargets (Targets ts) = Targets $ runByteArray do
-  let idx = subIndexVal @effs @effs' * sIZEOF_INT
-      len = sizeofByteArray ts - idx
-  assertM $ idx >= 0
-  assertM $ len >= 0
-  assertM $ (len `mod` sIZEOF_INT) == 0
-  ts' <- newByteArray len
-  copyByteArray ts' 0 ts idx len
-  pure ts'
+dropTargets (Targets ts) = Targets $ clonePrimArray ts (subIndexVal @effs @effs') (sizeofPrimArray ts)
 
 peekFrame :: Frames (f fs) -> Frame f fs
 peekFrame (Frames fs) = unsafeCoerce $ indexSmallArray fs (sizeofSmallArray fs - 1)
