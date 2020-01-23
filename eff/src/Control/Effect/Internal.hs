@@ -491,9 +491,7 @@ dropTargets (Targets ts) =
   in Targets $ clonePrimArray ts idx len
 
 -- -------------------------------------------------------------------------------------------------
--- continuations
-
-newtype Continuation effs i a = Continuation { restore :: a -> Eff effs i }
+-- remappings
 
 -- forall effss fs1
 --          . (forall fs2. fs1 ^~ fs2 -> a -> Context effs effss fs2 -> ST (S fs2) (R fs2))
@@ -732,6 +730,11 @@ abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
         !trs2 = pRemappings p
     fs2 <- dropFrames fs1
     pCont p topsRefl a (Context ts2 tss2 trs2 fs2)
+
+-- -------------------------------------------------------------------------------------------------
+-- continuations
+
+newtype Continuation effs i a = Continuation { restore :: a -> Eff effs i }
 
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
