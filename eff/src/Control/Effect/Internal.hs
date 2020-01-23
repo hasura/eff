@@ -178,8 +178,8 @@ class effs1 :<< effs2 where
 instance {-# OVERLAPPING #-} effs :<< effs where
   reifySubIndex = 0
   {-# INLINE reifySubIndex #-}
-instance effs1 :<< effs2 => effs1 :<< (eff ': effs2) where
-  reifySubIndex = reifySubIndex @effs1 @effs2 + 1
+instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
+  reifySubIndex = reifySubIndex @effs1 @effs3 + 1
   {-# INLINE reifySubIndex #-}
 
 type Depth :: FramesK -> Constraint
@@ -435,6 +435,13 @@ lift :: effs1 :<< effs2 => Eff effs1 ~> Eff effs2
 lift (Eff m) = Eff \k (Context ts1 tss1 fs1) ->
   let ctx = Context (dropTargets ts1) (PushTargets ts1 tss1) fs1
   in m (\tops a (Context _ (PushTargets ts2 tss2) fs2) -> k tops a (Context ts2 tss2 fs2)) ctx
+
+-- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
+-- behaviorally identical to just using 'lift', but the restricted type can produce better type
+-- inference.
+lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
+lift1 = lift
+{-# INLINE lift1 #-}
 
 -- -------------------------------------------------------------------------------------------------
 -- Handling
@@ -963,13 +970,6 @@ lift (Eff m) = Eff \k (Context tss fs) ->
   -- it isn’t clear whether or not that’s a win without benchmarking.
   let !ctx = Context (PushTargets (dropTargets $ peekTargets tss) tss) fs
   in m (\a (Context tss' fs') -> k a $! Context (popTargets tss') fs') ctx
-
--- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
--- behaviorally identical to just using 'lift', but the restricted type can produce better type
--- inference.
-lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
-lift1 = lift
-{-# INLINE lift1 #-}
 
 liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
 liftH (Eff m) = Eff \k (Context tss fs :: Context effs' effss' fs') ->
