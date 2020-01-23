@@ -100,12 +100,6 @@ rootsEq :: forall fs1 fs2. fs1 :<<# fs2 => 'ROOT (S fs1) (R fs1) :~: 'ROOT (S fs
 rootsEq = reifySubIndexF @fs1 @fs2 `seq` axiom
 {-# INLINE rootsEq #-}
 
--- | The representation of the frame @f@ above a stack of underlying frames @fs@.
-type Frame :: FrameK -> FramesK -> Type
-type family Frame f fs where
-  Frame ('CELL s) _ = s
-  Frame ('PROMPT eff effs i effss) fs = Prompt eff effs i effss fs
-
 type FrameEffect :: FrameK -> Effect
 type family FrameEffect f where
   FrameEffect ('CELL s) = Cell s
@@ -224,6 +218,15 @@ instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
   reifySubIndex = reifySubIndex @effs1 @effs3 + 1
   {-# INLINE reifySubIndex #-}
 
+type (:<<:) :: [Effect] -> [Effect] -> TYPE 'IntRep
+newtype effs1 :<<: effs2 = SubIndex# Int#
+
+reifySubIndex# :: forall effs1 effs2. effs1 :<< effs2 => effs1 :<<: effs2
+reifySubIndex# = let !(I# idx) = reifySubIndex @effs1 @effs2 in SubIndex# idx
+
+reflectSubIndex# :: forall effs1 effs2 r. effs1 :<<: effs2 -> (effs1 :<< effs2 => r) -> r
+reflectSubIndex# (SubIndex# idx) = reflectDict @(effs1 :<< effs2) (I# idx)
+
 type Depth :: FramesK -> Constraint
 class Depth fs where
   reifyDepth :: Int
@@ -276,10 +279,11 @@ newtype Eff effs a = Eff
 -- a single value of type @(effs ': effss) ':=>>' fs@) to avoid a pointer indirection when
 -- retrieving the topmost targets. It isn’t clear if this is beneficial in general, as it requires
 -- an additional argument to be passed on the stack; benchmarking the difference would be useful.
-newtype Context effs effss fs = Context# (# effs :->> fs, effss :=>> fs, Frames# fs #)
-pattern Context :: effs :->> fs -> effss :=>> fs -> Frames fs -> Context effs effss fs
-pattern Context a b c <- Context# (# a, b, (BoxFrames -> c) #)
-  where Context a b (BoxFrames c) = Context# (# a, b, c #)
+newtype Context effs effss fs = Context#
+  (# effs :->> fs, effss :=>> fs, (effs ': effss) :~>> fs, Frames# fs #)
+pattern Context :: effs :->> fs -> effss :=>> fs -> (effs ': effss) :~>> fs -> Frames fs -> Context effs effss fs
+pattern Context a b c d <- Context# (# a, b, c, (BoxFrames -> d) #)
+  where Context a b c (BoxFrames d) = Context# (# a, b, c, d #)
 {-# COMPLETE Context #-}
 
 -- | A stack of metacontinuation frames. The 'Int#' field contains the logical size of the current
@@ -296,14 +300,18 @@ pattern Frames a b <- BoxFrames (Frames# (# (I# -> a), (SmallMutableArray -> b) 
   where Frames (I# a) (SmallMutableArray b) = BoxFrames (Frames# (# a, b #))
 {-# COMPLETE Frames #-}
 
-type Prompt :: Effect -> [Effect] -> Type -> [[Effect]] -> FramesK -> Type
-data Prompt eff effs i effss fs = Prompt
-  { pCont :: forall fs2. fs ^~ fs2 -> i -> Context effs effss fs2 -> ST (S fs2) (R fs2)
-  -- ^ The continuation between this prompt and the parent prompt.
-  , pTargets :: (eff ': effs) :->> 'PROMPT eff effs i effss fs
-  , pTargetss :: (effs ': effss) :=>> fs
-  , pHandler :: forall effs'. Handling# eff effs i effs' -> eff (Eff effs') ~> Eff effs'
-  }
+-- | The representation of the frame @f@ above a stack of underlying frames @fs@.
+type Frame :: FrameK -> FramesK -> Type
+data Frame f fs where
+  Cell :: ~s -> Frame ('CELL s) fs
+  Prompt ::
+    { pCont :: forall fs2. fs ^~ fs2 -> i -> Context effs effss fs2 -> ST (S fs2) (R fs2)
+    -- ^ The continuation between this prompt and the parent prompt.
+    , pHandler :: forall effs'. Handling# eff effs i effs' -> eff (Eff effs') ~> Eff effs'
+    , pTargets :: (eff ': effs) :->> 'PROMPT eff effs i effss fs
+    , pTargetss :: (effs ': effss) :=>> fs
+    , pRemappings :: (effs ': effss) :~>> fs
+    } -> Frame ('PROMPT eff effs i effss) fs
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -312,30 +320,13 @@ data Prompt eff effs i effss fs = Prompt
 
   * eff   :->  fs — target indirection index
   * effs  :->> fs — target indirection vector
-  * effss :=>> fs — target indirection vector stack
+  * effss :=>> fs — target indirection stack
   * effs  :~>> fs — target remapping stack
 
 -}
 
 type (:->) :: Effect -> FramesK -> Type
 newtype eff :-> fs = Target { unTarget :: Int }
-
--- type (:=>) :: [Effect] -> FramesK -> Type
--- newtype effs :=> fs = TargetsSegment { unTargetsSegment :: PrimArray Int }
---
--- -- | The maximum size of a 'TargetsSegment'.
--- maxSegmentSize :: Int
--- maxSegmentSize = 32
--- {-# INLINE maxSegmentSize #-}
-
--- type (:->>) :: [Effect] -> FramesK -> Type
--- data effs :->> fs where
---   NoTargets :: '[] :->> fs
---   Targets
---     :: (effs1 ++ effs2) ~# effs
---     -> {-# UNPACK #-} effs1 :=> fs
---     -> effs2 :->> fs
---     -> effs :->> fs
 
 type (:->>) :: [Effect] -> FramesK -> Type
 newtype effs :->> fs = Targets { unTargets :: PrimArray Int }
@@ -350,10 +341,18 @@ data effss :=>> fs where
     , popTargets :: effss :=>> fs
     } -> (effs ': effss) :=>> fs
 
-type (:~>>) :: [Effect] -> FramesK -> Type
-data effs :~>> fs where
---   Id ::
---   Lift :: {-# UNPACK #-} effs1 :⊆: effs2 ->
+-- | A /target remapping stack/, which records changes to the target indirection stack. The
+-- remapping stack is saved whenever a continuation is captured, and it is “replayed” when the
+-- continuation is restored to rebuild a new target indirection stack for a new set of frames.
+type (:~>>) :: [[Effect]] -> FramesK -> Type
+data effss :~>> fs where
+  Run :: '[effs] :~>> fs
+  Lift :: effs1 :<<: effs2
+       -> (effs2 ': effss) :~>> fs
+       -> (effs1 ': effs2 ': effss) :~>> fs
+  LiftH :: Handling# eff effs i effs'
+        -> (effs' ': effss) :~>> fs
+        -> ((eff ': effs) ': effs' ': effss) :~>> fs
 
 -- -------------------------------------------------------------------------------------------------
 -- frames
@@ -470,6 +469,13 @@ dropTargets (Targets ts) =
   in Targets $ clonePrimArray ts idx len
 
 -- -------------------------------------------------------------------------------------------------
+-- remappings
+
+popRemapping :: (effs1 ': effs2 ': effss) :~>> fs -> (effs2 ': effss) :~>> fs
+popRemapping (Lift _ trs) = trs
+popRemapping (LiftH _ trs) = trs
+
+-- -------------------------------------------------------------------------------------------------
 -- core Eff operations
 
 instance Functor (Eff effs) where
@@ -489,12 +495,13 @@ instance Monad (Eff effs) where
 run :: Eff '[] a -> a
 run (Eff m) = runST do
   fs <- newEmptyFrames
-  m (\Roots v _ -> pure v) (Context noTargets NoTargetss fs)
+  m (\Roots v _ -> pure v) (Context noTargets NoTargetss Run fs)
 
 lift :: effs1 :<< effs2 => Eff effs1 ~> Eff effs2
-lift (Eff m) = Eff \k (Context ts1 tss1 fs1) ->
-  let ctx = Context (dropTargets ts1) (PushTargets ts1 tss1) fs1
-  in m (\tops a (Context _ (PushTargets ts2 tss2) fs2) -> k tops a (Context ts2 tss2 fs2)) ctx
+lift (Eff m) = Eff \k (Context ts1 tss1 trs1 fs1) ->
+  m (\tops a (Context _ (PushTargets ts2 tss2) (popRemapping -> trs2) fs2) ->
+       k tops a (Context ts2 tss2 trs2 fs2))
+    (Context (dropTargets ts1) (PushTargets ts1 tss1) (Lift reifySubIndex# trs1) fs1)
 
 -- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
 -- behaviorally identical to just using 'lift', but the restricted type can produce better type
@@ -544,7 +551,7 @@ reflectHandling# (Handling# n) = reflectDict @(Handling eff effs i effs') (I# n)
 -- Eff operations that use Handling
 
 send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
-send e = Eff \k ctx@(Context ts _ fs) ->
+send e = Eff \k ctx@(Context ts _ _ fs) ->
   with (handles e) $
   indexFrame (lookupTarget @eff ts) fs \(_ :: Proxy# (f fs)) p ->
   withHandlesImpliesPrompt @f \(_ :: Proxy# ('PROMPT eff effs2 i effss)) ->
@@ -556,14 +563,15 @@ handle
   => (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
   -> Eff (eff ': effs) a
   -> Eff effs a
-handle f (Eff m) = Eff \k1 (Context ts1 tss1 fs1 :: Context effs effss1 fs1) ->
+handle f (Eff m) = Eff \k1 (Context ts1 tss1 trs1 fs1 :: Context effs effss1 fs1) ->
   withDepthOf fs1 do
-    let f1 :: Prompt eff effs a effss1 fs1
+    let f1 :: Frame ('PROMPT eff effs a effss1) fs1
         f1 = Prompt
           { pCont = k1
+          , pHandler = \n e -> reflectHandling# n $ f e
           , pTargets = ts2
           , pTargetss = PushTargets ts1 tss1
-          , pHandler = \n e -> reflectHandling# n $ f e
+          , pRemappings = trs1
           }
 
         ts2 :: (eff ': effs) :->> 'PROMPT eff effs a effss1 fs1
@@ -571,30 +579,33 @@ handle f (Eff m) = Eff \k1 (Context ts1 tss1 fs1 :: Context effs effss1 fs1) ->
 
         k2 :: forall fs2. 'PROMPT eff effs a effss1 fs1 ^~ fs2
            -> a -> Context (eff ': effs) '[] fs2 -> ST (S fs2) (R fs2)
-        k2 Prompts a (Context _ _ ffs3) = do
+        k2 Prompts a (Context _ _ _ ffs3) = do
           (f3, fs3) <- popFrame ffs3
           let !(PushTargets ts3 tss3) = pTargetss f3
-          pCont f3 topsRefl a (Context ts3 tss3 fs3)
+              !trs3 = pRemappings f3
+          pCont f3 topsRefl a (Context ts3 tss3 trs3 fs3)
 
     fs2 <- pushFrame f1 fs1
-    m k2 (Context ts2 NoTargetss fs2)
+    m k2 (Context ts2 NoTargetss Run fs2)
 
 liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
-liftH (Eff m) = Eff \k (Context ts1 tss1 fs1) ->
+liftH (Eff m) = Eff \k (Context ts1 tss1 trs1 fs1) ->
   withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
   lookupFrame @('PROMPT eff effs i effss) fs1 \_ p ->
-    let ctx = Context (weakenTargets $ pTargets p) (PushTargets ts1 tss1) fs1
-    in m (\tops a (Context _ (PushTargets ts2 tss2) fs2) -> k tops a (Context ts2 tss2 fs2)) ctx
+    m (\tops a (Context _ (PushTargets ts2 tss2) (popRemapping -> trs2) fs2) ->
+         k tops a (Context ts2 tss2 trs2 fs2))
+      (Context (weakenTargets $ pTargets p) (PushTargets ts1 tss1) (LiftH reifyHandling# trs1) fs1)
 
 abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
-abort a = Eff \_ (Context ts1 _ (fs1 :: Frames fs1)) ->
+abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
   withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
   lookupFrame @('PROMPT eff effs i effss) fs1 \(_ :: Proxy# fs2) p ->
   withWeakenSubIndex @('PROMPT eff effs i effss) @fs2 @fs1 $
   with (rootsEq @fs2 @fs1) do
     let !(PushTargets ts2 tss2) = pTargetss p
+        !trs2 = pRemappings p
     fs2 <- dropFrames fs1
-    pCont p topsRefl a (Context ts2 tss2 fs2)
+    pCont p topsRefl a (Context ts2 tss2 trs2 fs2)
 
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
@@ -605,13 +616,11 @@ abort a = Eff \_ (Context ts1 _ (fs1 :: Frames fs1)) ->
 --   withWeakenSubIndex @('PROMPT eff effs i effss) @fs2 @fs1 $
 --   with (rootsEq @fs2 @fs1) do
 --     let m :: Eff effs i
---         m = _
---
---         -- k :: forall fs3. fs2 ^~ fs3 -> i -> Context effs effss fs3 -> ST (S fs3) (R fs3)
---         -- k _
+--         m = f \a -> Eff \k2 (Context ts3 tss3 fs3) ->
+--           _ -- k1 topsRefl a (Context )
 --
 --         !(PushTargets ts2 tss2) = pTargetss p
 --     fs2 <- dropFrames fs1
---     unEff m _ (Context ts2 tss2 fs2)
+--     unEff m (pCont p) (Context ts2 tss2 fs2)
 
 -- -------------------------------------------------------------------------------------------------
