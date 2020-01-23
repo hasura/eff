@@ -48,17 +48,19 @@ common common
     FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs
     KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedStrings
     PatternSynonyms QuantifiedConstraints RankNTypes RoleAnnotations ScopedTypeVariables
-    StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies
-    TypeOperators ViewPatterns
+    StandaloneDeriving StandaloneKindSignatures TupleSections TypeApplications TypeFamilies
+    TypeFamilyDependencies TypeOperators UnliftedNewtypes ViewPatterns
 
 library
   import: common
   hs-source-dirs: src
   exposed-modules:
-    Control.Effect
+    -- Control.Effect
     Control.Effect.Internal
     Control.Effect.Internal.Debug
+    Control.Effect.Internal.Equality
     Control.Effect.Internal.PrimArray
+    Control.Effect.Internal.SmallArray
 
 test-suite eff-tests
   import: common
