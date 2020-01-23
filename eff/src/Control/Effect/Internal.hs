@@ -546,35 +546,25 @@ dropTargets (Targets ts) =
   -- -- ^ index of the frame to capture
   -- ->
 
--- restore1
---   :: forall eff effs1 i effss1 fs1 effs2 effss2
---    . (forall fs2. fs1 ^~ fs2 -> i -> Context effs1 effss1 fs2 -> ST (S fs2) (R fs2))
---   -> (forall effs'. Handling# eff effs1 i effs' -> eff (Eff effs') ~> Eff effs')
---   -> effs2 :~>> effss2
---   -> Context effs1 effss1 fs1
---   -> Context effs2 effss2 ('PROMPT eff effs1 i effss1 fs1)
--- restore1 k f trs2 (Context ts1 tss1 trs1 fs1) =
---   Context _ _ trs2 _
-
 popRemapping :: (effs1 ': effs2 ': effss) :~>> effs3 -> (effs2 ': effss) :~>> effs3
 popRemapping (Lift _ trs) = trs
 popRemapping (LiftH _ trs) = trs
 
-replayRemapping
+replayRemappings
   :: forall effss effs fs
    . effss :~>> effs
-  -> Frames fs
   -> effs :->> fs
+  -> Frames fs
   -> ST (S fs) (effss :=>> fs)
   -- ^ Note: this runs in 'ST', but it doesn’t mutate any state, it only needs read-ordering
   -- guarantees.
-replayRemapping Run _ ts = pure $! PushTargets ts NoTargetss
-replayRemapping (Lift idx trs) fs ts = do
-  tss <- replayRemapping trs fs ts
+replayRemappings Run ts _ = pure $! PushTargets ts NoTargetss
+replayRemappings (Lift idx trs) ts fs = do
+  tss <- replayRemappings trs ts fs
   reflectSubIndex# idx $
     pure $! PushTargets (dropTargets $ peekTargets tss) tss
-replayRemapping (LiftH (idx :: RelativeHandling eff effs2 i effs3) trs) fs ts1 = do
-  tss <- replayRemapping trs fs ts1
+replayRemappings (LiftH (idx :: RelativeHandling eff effs2 i effs3) trs) ts1 fs = do
+  tss <- replayRemappings trs ts1 fs
   let ts2 = peekTargets tss
   reflectRelativeHandling ts2 fs idx $
     withHandling @eff @effs3 ts2 \(_ :: Proxy# effss2) ->
@@ -735,6 +725,31 @@ abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
 -- continuations
 
 newtype Continuation effs i a = Continuation { restore :: a -> Eff effs i }
+
+restore1
+  :: forall eff effs1 i effss1 fs1 effs2 effss2 r
+   . (forall fs2. fs1 ^~ fs2 -> i -> Context effs1 effss1 fs2 -> ST (S fs2) (R fs2))
+  -> (forall effs'. Handling# eff effs1 i effs' -> eff (Eff effs') ~> Eff effs')
+  -> (effs2 ': effss2) :~>> (eff ': effs1)
+  -> Context effs1 effss1 fs1
+  -> (Context effs2 effss2 ('PROMPT eff effs1 i effss1 fs1) -> ST (S fs1) r)
+  -> ST (S fs1) r
+restore1 k1 f trs2 (Context ts1 tss1 trs1 fs1) k2 =
+  withDepthOf fs1 do
+    let ts2 :: (eff ': effs1) :->> 'PROMPT eff effs1 i effss1 fs1
+        ts2 = pushTarget (newTarget @('PROMPT eff effs1 i effss1)) (weakenTargets ts1)
+
+        f2 :: Frame ('PROMPT eff effs1 i effss1) fs1
+        f2 = Prompt
+          { pCont = k1
+          , pHandler = f
+          , pTargets = ts2
+          , pTargetss = PushTargets ts1 tss1
+          , pRemappings = trs1
+          }
+    fs2 <- pushFrame f2 fs1
+    PushTargets ts3 tss3 <- replayRemappings trs2 ts2 fs2
+    k2 (Context ts3 tss3 trs2 fs2)
 
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
