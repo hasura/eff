@@ -105,6 +105,12 @@ type family FrameEffect f where
   FrameEffect ('CELL s) = Cell s
   FrameEffect ('PROMPT eff _ _ _) = eff
 
+-- | The list of effects made “visible” by the current stack of frames without any uses of 'liftH'
+-- or related operations.
+type VisibleEffects :: FramesK -> [Effect]
+type family VisibleEffects fs where
+  VisibleEffects ('ROOT _ _) = '[]
+  VisibleEffects ('PROMPT eff effs _ _ _) = eff ': effs
 
 -- | A proof that the /top frames/ of two 'FramesK' types are equal, up to the topmost prompt. If
 -- there are no prompts, they must be completely identical.
@@ -280,10 +286,10 @@ newtype Eff effs a = Eff
 -- retrieving the topmost targets. It isn’t clear if this is beneficial in general, as it requires
 -- an additional argument to be passed on the stack; benchmarking the difference would be useful.
 newtype Context effs effss fs = Context#
-  (# effs :->> fs, effss :=>> fs, (effs ': effss) :~>> fs, Frames# fs #)
-pattern Context :: effs :->> fs -> effss :=>> fs -> (effs ': effss) :~>> fs -> Frames fs -> Context effs effss fs
+  (# effs :->> fs, effss :=>> fs, (effs ': effss) :~>> VisibleEffects fs, Frames# fs #)
+pattern Context :: effs :->> fs -> effss :=>> fs -> (effs ': effss) :~>> VisibleEffects fs -> Frames fs -> Context effs effss fs
 pattern Context a b c d <- Context# (# a, b, c, (BoxFrames -> d) #)
-  where Context a b c (BoxFrames d) = Context# (# a, b, c, d #)
+  where Context !a !b !c (BoxFrames !d) = Context# (# a, b, c, d #)
 {-# COMPLETE Context #-}
 
 -- | A stack of metacontinuation frames. The 'Int#' field contains the logical size of the current
@@ -310,18 +316,17 @@ data Frame f fs where
     , pHandler :: forall effs'. Handling# eff effs i effs' -> eff (Eff effs') ~> Eff effs'
     , pTargets :: (eff ': effs) :->> 'PROMPT eff effs i effss fs
     , pTargetss :: (effs ': effss) :=>> fs
-    , pRemappings :: (effs ': effss) :~>> fs
+    , pRemappings :: (effs ': effss) :~>> VisibleEffects fs
     } -> Frame ('PROMPT eff effs i effss) fs
 
 -- -------------------------------------------------------------------------------------------------
 
-
 {- The arrow zoo:
 
-  * eff   :->  fs — target indirection index
-  * effs  :->> fs — target indirection vector
-  * effss :=>> fs — target indirection stack
-  * effs  :~>> fs — target remapping stack
+  * eff   :->  fs    — target indirection index
+  * effs  :->> fs    — target indirection vector
+  * effss :=>> fs    — target indirection stack
+  * effs  :~>> effss — target remapping stack
 
 -}
 
@@ -344,15 +349,32 @@ data effss :=>> fs where
 -- | A /target remapping stack/, which records changes to the target indirection stack. The
 -- remapping stack is saved whenever a continuation is captured, and it is “replayed” when the
 -- continuation is restored to rebuild a new target indirection stack for a new set of frames.
-type (:~>>) :: [[Effect]] -> FramesK -> Type
-data effss :~>> fs where
-  Run :: '[effs] :~>> fs
+type (:~>>) :: [[Effect]] -> [Effect] -> Type
+data effss :~>> effs where
+  Run :: '[effs] :~>> effs
   Lift :: effs1 :<<: effs2
-       -> (effs2 ': effss) :~>> fs
-       -> (effs1 ': effs2 ': effss) :~>> fs
-  LiftH :: Handling# eff effs i effs'
-        -> (effs' ': effss) :~>> fs
-        -> ((eff ': effs) ': effs' ': effss) :~>> fs
+       -> (effs2 ': effss) :~>> effs3
+       -> (effs1 ': effs2 ': effss) :~>> effs3
+  LiftH :: {-# UNPACK #-} RelativeHandling eff effs i effs2
+        -- ^ The index of the prompt frame we’re lifting to, stored as a relative offset /backwards/
+        -- from the current topmost frame. Why do we store it this way? Well, if we stored it as an
+        -- absolute index, the index might have to be shifted on continuation restore, since the
+        -- length of the new frames stack might be different.
+        --
+        -- Storing the index this way is entirely safe, as the frame being lifted to is guaranteed
+        -- to be in the captured part of the frames stack. If it wasn’t, we’d be in big trouble, as
+        -- we wouldn’t have a frame to lift to! Fortunately, this property holds: once you call
+        -- 'liftH', you can’t capture a more-nested continuation anymore because the only way to get
+        -- back into a more-nested context is to return from the call to 'liftH'.
+        --
+        -- (Technically, you can capture a more-nested continuation by installing a totally new
+        -- prompt and capturing up to that, but that’s a new prompt, so it won’t have the 'LiftH'
+        -- remapping frame in it, anyway.)
+        --
+        -- It would be nice to encode this subtlety in the type system somehow, but I’m not sure how
+        -- to do it.
+        -> (effs2 ': effss) :~>> effs3
+        -> ((eff ': effs) ': effs2 ': effss) :~>> effs3
 
 -- -------------------------------------------------------------------------------------------------
 -- frames
@@ -469,11 +491,97 @@ dropTargets (Targets ts) =
   in Targets $ clonePrimArray ts idx len
 
 -- -------------------------------------------------------------------------------------------------
--- remappings
+-- continuations
 
-popRemapping :: (effs1 ': effs2 ': effss) :~>> fs -> (effs2 ': effss) :~>> fs
+newtype Continuation effs i a = Continuation { restore :: a -> Eff effs i }
+
+-- forall effss fs1
+--          . (forall fs2. fs1 ^~ fs2 -> a -> Context effs effss fs2 -> ST (S fs2) (R fs2))
+--         -> Context effs effss fs1 -> ST (S fs1) (R fs1)
+
+-- -- | A type family that captures how restoring a single captured 'Frame' modifies the 'Context'.
+-- type family Restore effs effss fs f where
+--   -- Restore effs effss fs ('CELL s) =
+--   --   Context (Cell s ': effs) (effs ': effss) ('CELL s fs)
+--   Restore effs1 effss1 fs ('PROMPT eff effs2 i _) =
+--     Context (eff ': effs2) '[] ('PROMPT eff effs2 i (effs1 ': effss1) fs)
+
+-- type family Restore f where
+--   Restore ('PROMPT eff effs i effss) = i -> Eff effs r
+
+-- capture
+--   :: forall eff effs1 r effss1 fs1 a effs2 effss2. 'PROMPT eff effs1 r effss1 :<# fs1
+--   => (forall fs2. fs1 ^~ fs2 -> a -> Context effs2 effss2 fs2 -> ST (S fs2) (R fs2))
+--   -> (effs2 ': effss2) :~>> fs1 -> Frames fs1 -> ST (S fs1) (Continuation effs1 r a)
+-- capture k1 trs1 (Frames len1 fs1) = do
+--   let idx = reifyIndexF @('PROMPT eff effs1 r effss1) @fs1
+--   undefined
+--   where
+--     restore1
+--       :: Frame f fs2
+--       -> Eff
+
+
+    -- restore1
+    --   :: forall f fs2 effs3 effss3 fs3 r
+    --    . Frame f fs2
+    --   -> Proxy# f
+    --   -> Context effs3 effss3 fs3
+    --   -> (forall fs3. fs2 ^~ fs3 -> a -> Context effs2 effss2 fs2 -> ST (S fs2) (R fs2))
+    --   -> (Restore effs3 effss3 fs3 f -> ST (S fs3) r)
+    --   -> ST (S fs3) r
+    -- restore1 Prompt { pCont, pHandler } (_ :: Proxy# ('PROMPT eff4 effs4 i effss4)) =
+    --   \(Context ts2 tss2 trs2 fs2) k -> do
+    --     let ts3 = pushTarget newTarget (weakenTargets ts2)
+    --         f3 :: Frame ('PROMPT eff4 effs4 i (effs3 ': effss3)) fs3
+    --         f3 = Prompt
+    --           { pCont, pHandler
+    --           , pTargets = ts3
+    --           , pTargetss = PushTargets ts2 tss2
+    --           , pRemappings = trs2 }
+    --     fs3 <- pushFrame f3 fs2
+    --     k (Context ts3 NoTargetss Run fs3)
+
+  {- Plan of attack: build a “restore plan” that knows how to push a sequence of frames onto the new
+  frames stack, resolving remappings as it goes. -}
+  -- :: Int
+  -- -- ^ index of the frame to capture
+  -- ->
+
+-- restore1
+--   :: forall eff effs1 i effss1 fs1 effs2 effss2
+--    . (forall fs2. fs1 ^~ fs2 -> i -> Context effs1 effss1 fs2 -> ST (S fs2) (R fs2))
+--   -> (forall effs'. Handling# eff effs1 i effs' -> eff (Eff effs') ~> Eff effs')
+--   -> effs2 :~>> effss2
+--   -> Context effs1 effss1 fs1
+--   -> Context effs2 effss2 ('PROMPT eff effs1 i effss1 fs1)
+-- restore1 k f trs2 (Context ts1 tss1 trs1 fs1) =
+--   Context _ _ trs2 _
+
+popRemapping :: (effs1 ': effs2 ': effss) :~>> effs3 -> (effs2 ': effss) :~>> effs3
 popRemapping (Lift _ trs) = trs
 popRemapping (LiftH _ trs) = trs
+
+replayRemapping
+  :: forall effss effs fs
+   . effss :~>> effs
+  -> Frames fs
+  -> effs :->> fs
+  -> ST (S fs) (effss :=>> fs)
+  -- ^ Note: this runs in 'ST', but it doesn’t mutate any state, it only needs read-ordering
+  -- guarantees.
+replayRemapping Run _ ts = pure $! PushTargets ts NoTargetss
+replayRemapping (Lift idx trs) fs ts = do
+  tss <- replayRemapping trs fs ts
+  reflectSubIndex# idx $
+    pure $! PushTargets (dropTargets $ peekTargets tss) tss
+replayRemapping (LiftH (idx :: RelativeHandling eff effs2 i effs3) trs) fs ts1 = do
+  tss <- replayRemapping trs fs ts1
+  let ts2 = peekTargets tss
+  reflectRelativeHandling ts2 fs idx $
+    withHandling @eff @effs3 ts2 \(_ :: Proxy# effss2) ->
+    lookupFrame @('PROMPT eff effs2 i effss2) fs \_ p ->
+      pure $! PushTargets (weakenTargets $ pTargets p) tss
 
 -- -------------------------------------------------------------------------------------------------
 -- core Eff operations
@@ -547,6 +655,23 @@ reflectHandling#
   :: forall eff effs i effs' r. Handling# eff effs i effs' -> (Handling eff effs i effs' => r) -> r
 reflectHandling# (Handling# n) = reflectDict @(Handling eff effs i effs') (I# n)
 
+-- | See 'LiftH'.
+type RelativeHandling :: Effect -> [Effect] -> Type -> [Effect] -> Type
+newtype RelativeHandling eff effs i effs' = RelativeHandling Int
+
+reifyRelativeHandling
+  :: forall eff effs2 effs1 i fs. Handling eff effs1 i effs2
+  => effs2 :->> fs -> Frames fs -> RelativeHandling eff effs1 i effs2
+reifyRelativeHandling !_ (Frames len _) =
+  RelativeHandling (len - reifyHandlerIndex @eff @effs1 @i @effs2)
+
+reflectRelativeHandling
+  :: forall eff effs2 effs1 i fs r
+   . effs2 :->> fs -> Frames fs -> RelativeHandling eff effs1 i effs2
+  -> (Handling eff effs1 i effs2 => r) -> r
+reflectRelativeHandling !_ (Frames len _) (RelativeHandling idx) =
+  reflectDict @(Handling eff effs1 i effs2) (len - idx)
+
 -- -------------------------------------------------------------------------------------------------
 -- Eff operations that use Handling
 
@@ -592,9 +717,10 @@ liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs)
 liftH (Eff m) = Eff \k (Context ts1 tss1 trs1 fs1) ->
   withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
   lookupFrame @('PROMPT eff effs i effss) fs1 \_ p ->
-    m (\tops a (Context _ (PushTargets ts2 tss2) (popRemapping -> trs2) fs2) ->
-         k tops a (Context ts2 tss2 trs2 fs2))
-      (Context (weakenTargets $ pTargets p) (PushTargets ts1 tss1) (LiftH reifyHandling# trs1) fs1)
+    let trs2 = LiftH (reifyRelativeHandling ts1 fs1) trs1
+    in m (\tops a (Context _ (PushTargets ts2 tss2) (popRemapping -> trs3) fs2) ->
+            k tops a (Context ts2 tss2 trs3 fs2))
+         (Context (weakenTargets $ pTargets p) (PushTargets ts1 tss1) trs2 fs1)
 
 abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
 abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
@@ -610,17 +736,18 @@ abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
 --   => ((a -> Eff effs i) -> Eff effs i) -> Eff effs' a
--- shift f = Eff \k1 (Context ts1 tss1 (fs1 :: Frames fs1)) ->
+-- shift f = Eff \k1 (Context ts1 tss1 trs1 (fs1 :: Frames fs1)) ->
 --   withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
 --   lookupFrame @('PROMPT eff effs i effss) fs1 \(_ :: Proxy# fs2) p ->
 --   withWeakenSubIndex @('PROMPT eff effs i effss) @fs2 @fs1 $
 --   with (rootsEq @fs2 @fs1) do
 --     let m :: Eff effs i
---         m = f \a -> Eff \k2 (Context ts3 tss3 fs3) ->
+--         m = f \a -> Eff \k2 (Context ts3 tss3 trs3 fs3) ->
 --           _ -- k1 topsRefl a (Context )
 --
 --         !(PushTargets ts2 tss2) = pTargetss p
+--         !trs2 = pRemappings p
 --     fs2 <- dropFrames fs1
---     unEff m (pCont p) (Context ts2 tss2 fs2)
+--     unEff m (pCont p) (Context ts2 tss2 trs2 fs2)
 
 -- -------------------------------------------------------------------------------------------------

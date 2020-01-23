@@ -15,6 +15,7 @@ module Control.Effect.Internal.SmallArray
   , writeSmallArray
   , copySmallArray
   , copySmallMutableArray
+  , cloneSmallMutableArray
   ) where
 
 import qualified Data.Primitive.SmallArray as P
@@ -67,9 +68,9 @@ copySmallArray
 copySmallArray dst idx_dst src idx_src len = do
   assertM $ len >= 0
   assertM $ idx_dst >= 0
-  assertM $ idx_dst + len < sizeofSmallMutableArray dst
+  assertM $ idx_dst + len <= sizeofSmallMutableArray dst
   assertM $ idx_src >= 0
-  assertM $ idx_src + len < sizeofSmallArray src
+  assertM $ idx_src + len <= sizeofSmallArray src
   P.copySmallArray dst idx_dst src idx_src len
 {-# INLINE copySmallArray #-}
 
@@ -79,8 +80,18 @@ copySmallMutableArray
 copySmallMutableArray dst idx_dst src idx_src len = do
   assertM $ len >= 0
   assertM $ idx_dst >= 0
-  assertM $ idx_dst + len < sizeofSmallMutableArray dst
+  assertM $ idx_dst + len <= sizeofSmallMutableArray dst
   assertM $ idx_src >= 0
-  assertM $ idx_src + len < sizeofSmallMutableArray src
+  assertM $ idx_src + len <= sizeofSmallMutableArray src
   P.copySmallMutableArray dst idx_dst src idx_src len
 {-# INLINE copySmallMutableArray #-}
+
+cloneSmallMutableArray
+  :: (DebugCallStack, PrimMonad m)
+  => SmallMutableArray (PrimState m) a -> Int -> Int -> m (SmallMutableArray (PrimState m) a)
+cloneSmallMutableArray src idx len = do
+  assertM $ len >= 0
+  assertM $ idx >= 0
+  assertM $ idx + len <= sizeofSmallMutableArray src
+  P.cloneSmallMutableArray src idx len
+{-# INLINE cloneSmallMutableArray #-}

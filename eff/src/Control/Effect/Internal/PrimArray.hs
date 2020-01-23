@@ -72,8 +72,8 @@ copyPrimArray dst idx_dst src idx_src len = do
     assertM $ len >= 0
     assertM $ idx_dst >= 0
     dst_len <- getSizeofMutablePrimArray dst
-    assertM $ idx_dst + len < dst_len
+    assertM $ idx_dst + len <= dst_len
     assertM $ idx_src >= 0
-    assertM $ idx_src + len < sizeofPrimArray src
+    assertM $ idx_src + len <= sizeofPrimArray src
   P.copyPrimArray dst idx_dst src idx_src len
 {-# INLINE copyPrimArray #-}
