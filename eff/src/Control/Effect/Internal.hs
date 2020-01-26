@@ -18,6 +18,7 @@ import Control.Natural (type (~>))
 import Data.Coerce
 import Data.Kind (Constraint, Type)
 import Data.Foldable
+import Data.Functor
 import Data.Type.Equality ((:~:)(..))
 import GHC.Exts (Any, Int(..), Int#, Proxy#, RealWorld, RuntimeRep(..), SmallMutableArray#, State#, TYPE, Void#, proxy#, runRW#, void#)
 import GHC.TypeLits (ErrorMessage(..), Nat, TypeError)
@@ -110,6 +111,7 @@ type family FrameEffect f where
 type VisibleEffects :: FramesK -> [Effect]
 type family VisibleEffects fs where
   VisibleEffects ('ROOT _ _) = '[]
+  VisibleEffects ('CELL s fs) = Cell s ': VisibleEffects fs
   VisibleEffects ('PROMPT eff effs _ _ _) = eff ': effs
 
 -- | A proof that the /top frames/ of two 'FramesK' types are equal, up to the topmost prompt. If
@@ -384,6 +386,7 @@ data effss :~>> effs where
 pattern Any :: forall a. a -> Any
 pattern Any a <- (unsafeCoerce -> a)
   where Any = unsafeCoerce
+{-# COMPLETE Any #-}
 
 -- | Used to explicitly overwrite references to values that should not be retained by the GC.
 null# :: Any
@@ -394,6 +397,9 @@ newEmptyFrames = Frames 0 <$> newSmallArray 32 null#
 
 withDepthOf :: forall fs r. Frames fs -> (Depth fs => r) -> r
 withDepthOf (Frames len _) = reflectDict @(Depth fs) len
+
+peekFrame :: Frames (f fs) -> ST (S fs) (Frame f fs)
+peekFrame (Frames len fs) = readSmallArray fs (len - 1) <&> \(Any f) -> f
 
 lookupFrame
   :: forall f fs2 r. (DebugCallStack, f :<# fs2)
@@ -492,59 +498,6 @@ dropTargets (Targets ts) =
 
 -- -------------------------------------------------------------------------------------------------
 -- remappings
-
--- forall effss fs1
---          . (forall fs2. fs1 ^~ fs2 -> a -> Context effs effss fs2 -> ST (S fs2) (R fs2))
---         -> Context effs effss fs1 -> ST (S fs1) (R fs1)
-
--- -- | A type family that captures how restoring a single captured 'Frame' modifies the 'Context'.
--- type family Restore effs effss fs f where
---   -- Restore effs effss fs ('CELL s) =
---   --   Context (Cell s ': effs) (effs ': effss) ('CELL s fs)
---   Restore effs1 effss1 fs ('PROMPT eff effs2 i _) =
---     Context (eff ': effs2) '[] ('PROMPT eff effs2 i (effs1 ': effss1) fs)
-
--- type family Restore f where
---   Restore ('PROMPT eff effs i effss) = i -> Eff effs r
-
--- capture
---   :: forall eff effs1 r effss1 fs1 a effs2 effss2. 'PROMPT eff effs1 r effss1 :<# fs1
---   => (forall fs2. fs1 ^~ fs2 -> a -> Context effs2 effss2 fs2 -> ST (S fs2) (R fs2))
---   -> (effs2 ': effss2) :~>> fs1 -> Frames fs1 -> ST (S fs1) (Continuation effs1 r a)
--- capture k1 trs1 (Frames len1 fs1) = do
---   let idx = reifyIndexF @('PROMPT eff effs1 r effss1) @fs1
---   undefined
---   where
---     restore1
---       :: Frame f fs2
---       -> Eff
-
-
-    -- restore1
-    --   :: forall f fs2 effs3 effss3 fs3 r
-    --    . Frame f fs2
-    --   -> Proxy# f
-    --   -> Context effs3 effss3 fs3
-    --   -> (forall fs3. fs2 ^~ fs3 -> a -> Context effs2 effss2 fs2 -> ST (S fs2) (R fs2))
-    --   -> (Restore effs3 effss3 fs3 f -> ST (S fs3) r)
-    --   -> ST (S fs3) r
-    -- restore1 Prompt { pCont, pHandler } (_ :: Proxy# ('PROMPT eff4 effs4 i effss4)) =
-    --   \(Context ts2 tss2 trs2 fs2) k -> do
-    --     let ts3 = pushTarget newTarget (weakenTargets ts2)
-    --         f3 :: Frame ('PROMPT eff4 effs4 i (effs3 ': effss3)) fs3
-    --         f3 = Prompt
-    --           { pCont, pHandler
-    --           , pTargets = ts3
-    --           , pTargetss = PushTargets ts2 tss2
-    --           , pRemappings = trs2 }
-    --     fs3 <- pushFrame f3 fs2
-    --     k (Context ts3 NoTargetss Run fs3)
-
-  {- Plan of attack: build a “restore plan” that knows how to push a sequence of frames onto the new
-  frames stack, resolving remappings as it goes. -}
-  -- :: Int
-  -- -- ^ index of the frame to capture
-  -- ->
 
 popRemapping :: (effs1 ': effs2 ': effss) :~>> effs3 -> (effs2 ': effss) :~>> effs3
 popRemapping (Lift _ trs) = trs
@@ -724,8 +677,93 @@ abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
 -- -------------------------------------------------------------------------------------------------
 -- continuations
 
-newtype Continuation effs i a = Continuation { restore :: a -> Eff effs i }
+-- newtype Continuation effs i a = Continuation { restore :: a -> Eff effs i }
 
+data CapturedFramesK
+  = CROOT Effect
+  | CCELL Type CapturedFramesK
+  | CPROMPT Effect [Effect] Type [[Effect]] CapturedFramesK
+
+type CapturedFrameK = CapturedFramesK -> CapturedFramesK
+
+type RestoreFrames :: CapturedFramesK -> [Effect] -> Type -> [[Effect]] -> FramesK -> FramesK
+type family RestoreFrames cfs effs i effss fs where
+  RestoreFrames ('CROOT eff) effs i effss fs = 'PROMPT eff effs i effss fs
+  RestoreFrames ('CCELL s cfs) effs i effss fs = 'CELL s (RestoreFrames cfs effs i effss fs)
+  RestoreFrames ('CPROMPT eff effs1 i1 effss1 cfs) effs2 i2 effss2 fs =
+    'PROMPT eff effs1 i1 effss1 (RestoreFrames cfs effs2 i2 effss2 fs)
+
+type Restore cfs effs i effss fs =
+  ( VisibleEffects (RestoreFrames cfs effs i effss fs) :->> RestoreFrames cfs effs i effss fs
+  , Frames (RestoreFrames cfs effs i effss fs) )
+
+type CapturedFrames :: CapturedFramesK -> [Effect] -> Type -> Type
+data CapturedFrames cfs effs i where
+  CRoot ::
+    { crHandler :: forall effs'. Handling# eff effs i effs' -> eff (Eff effs') ~> Eff effs'
+    } -> CapturedFrames ('CROOT eff) effs i
+  CCell :: ~s -> CapturedFrames cfs effs i -> CapturedFrames ('CCELL s cfs) effs i
+  CPrompt :: fs2 ~ RestoreFrames cfs effs2 i2 effss2 fs1 =>
+    { cpOrigEffss :: Proxy# effss2
+    , cpOrigFs :: Proxy# fs1
+    , cpCont :: forall fs3. fs2 ^~ fs3 -> i1 -> Context effs1 effss1 fs3 -> ST (S fs3) (R fs3)
+    , cpHandler :: forall effs3. Handling# eff effs1 i1 effs3 -> eff (Eff effs3) ~> Eff effs3
+    , cpRemappings :: (effs1 ': effss1) :~>> VisibleEffects fs2
+    , cpPop :: CapturedFrames cfs effs2 i2
+    } -> CapturedFrames ('CPROMPT eff effs1 i1 effss1 cfs) effs2 i2
+
+-- | A proof that the equality of 'VisibleEffects' over 'RestoreFrames' does not depend on the last
+-- two arguments. This is trivially true by case analysis, but we need the 'CapturedFrames' value as
+-- a runtime witness with which we can perform that case analysis.
+visibleEffectsOverRestoreFramesEq
+  :: forall effss1 fs1 effss2 fs2 cfs effs i
+   . CapturedFrames cfs effs i
+  ->  VisibleEffects (RestoreFrames cfs effs i effss1 fs1)
+  :~: VisibleEffects (RestoreFrames cfs effs i effss2 fs2)
+visibleEffectsOverRestoreFramesEq = \case
+  -- TODO: When debug mode is not enabled, replace this with `axiom` to avoid the pointless case
+  -- analysis cost.
+  CRoot _ -> Refl
+  CCell _ cfs -> with (visibleEffectsOverRestoreFramesEq @effss1 @fs1 @effss2 @fs2 cfs) Refl
+  CPrompt {} -> Refl
+
+topsOverRestoreFramesEq
+  :: forall effss1 fs1 effss2 fs2 fs3 (cf :: CapturedFrameK) cfs effs i
+   . CapturedFrames (cf cfs) effs i
+  -> RestoreFrames cfs effs i effss1 fs1 ^~ fs3
+  -> RestoreFrames cfs effs i effss2 fs2 ^~ fs3
+topsOverRestoreFramesEq = \case
+  CCell _ cfs -> \(Cells tops) -> Cells (topsOverRestoreFramesEq cfs tops)
+  CPrompt {} -> \Prompts -> Prompts
+
+restore
+  :: forall cfs1 effs1 i1 effss1 fs1
+   . CapturedFrames cfs1 effs1 i1
+  -> (forall fs2. fs1 ^~ fs2 -> i1 -> Context effs1 effss1 fs2 -> ST (S fs2) (R fs2))
+  -> Context effs1 effss1 fs1
+  -> ST (S fs1) (Restore cfs1 effs1 i1 effss1 fs1)
+restore cfs1 k1 (Context ts1 tss1 trs1 fs1) = go cfs1 proxy# where
+  go :: forall cfs2. CapturedFrames cfs2 effs1 i1 -> Proxy# cfs2
+     -> ST (S fs1) (Restore cfs2 effs1 i1 effss1 fs1)
+
+  go (CRoot f) (_ :: Proxy# ('CROOT eff)) = withDepthOf fs1 do
+    let ts2 = pushTarget (newTarget @('PROMPT eff effs1 i1 effss1)) (weakenTargets ts1)
+        f2 = Prompt k1 f ts2 (PushTargets ts1 tss1) trs1
+    fs2 <- pushFrame f2 fs1
+    pure (ts2, fs2)
+
+  go (CPrompt (_ :: Proxy# effss2) (_ :: Proxy# fs2) k2 f trs2 cfs2) (_ :: Proxy# ('CPROMPT eff effs2 i2 effss3 cfs3)) = do
+    (ts2, fs2) :: Restore cfs3 effs1 i1 effss1 fs1 <- go cfs2 proxy#
+    with (visibleEffectsOverRestoreFramesEq @effss1 @fs1 @effss2 @fs2 cfs2) do
+      PushTargets ts3 tss3 <- replayRemappings @(effs2 ': effss3) @(VisibleEffects (RestoreFrames cfs3 effs1 i1 effss1 fs1)) @(RestoreFrames cfs3 effs1 i1 effss1 fs1) trs2 ts2 fs2
+      withDepthOf fs2 do
+        let ts4 :: (eff ': effs2) :->> RestoreFrames ('CPROMPT eff effs2 i2 effss3 cfs3) effs1 i1 effss1 fs1
+            ts4 = pushTarget (newTarget @('PROMPT eff effs2 i2 effss3)) (weakenTargets ts3)
+            f3 = Prompt k2 f ts4 (PushTargets ts3 tss3) trs2
+        fs3 <- pushFrame f3 fs2
+        pure (ts4, fs3)
+
+-- | Restores a single captured 'Prompt' frame onto an existing 'Context'.
 restore1
   :: forall eff effs1 i effss1 fs1 effs2 effss2 r
    . (forall fs2. fs1 ^~ fs2 -> i -> Context effs1 effss1 fs2 -> ST (S fs2) (R fs2))
@@ -733,6 +771,7 @@ restore1
   -> (effs2 ': effss2) :~>> (eff ': effs1)
   -> Context effs1 effss1 fs1
   -> (Context effs2 effss2 ('PROMPT eff effs1 i effss1 fs1) -> ST (S fs1) r)
+  -- ^ Returned via CPS simply because we cannot return an unlifted value in 'ST'.
   -> ST (S fs1) r
 restore1 k1 f trs2 (Context ts1 tss1 trs1 fs1) k2 =
   withDepthOf fs1 do
@@ -750,6 +789,21 @@ restore1 k1 f trs2 (Context ts1 tss1 trs1 fs1) k2 =
     fs2 <- pushFrame f2 fs1
     PushTargets ts3 tss3 <- replayRemappings trs2 ts2 fs2
     k2 (Context ts3 tss3 trs2 fs2)
+
+-- capture
+--   :: forall eff effs1 i1 effss1 fs1 a effs2 effss2. 'PROMPT eff effs1 i1 effss1 :<# fs1
+--   => (forall fs2. fs1 ^~ fs2 -> a -> Context effs2 effss2 fs2 -> ST (S fs2) (R fs2))
+--   -> (effs2 ': effss2) :~>> VisibleEffects fs1
+--   -> Frames fs1
+--   -> ST (S fs1) (Continuation effs1 i1 a)
+-- capture k1 trs1 (Frames len1 fs1) = do
+--   let idx = reifyIndexF @('PROMPT eff effs1 i1 effss1) @fs1
+--   _
+--   where
+--     go :: Int
+--        -> (forall fs2. fs1 ^~ fs2 -> i -> Context effs1 effss1 fs2 -> ST (S fs2) (R fs2))
+--        ->
+--        -> ST (S fs1)
 
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
