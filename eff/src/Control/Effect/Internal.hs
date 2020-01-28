@@ -1,5 +1,5 @@
 -- {-# OPTIONS_GHC -fno-max-relevant-binds #-}
-{-# OPTIONS_GHC -fmax-relevant-binds=20 #-}
+-- {-# OPTIONS_GHC -fmax-relevant-binds=20 #-}
 {-# OPTIONS_GHC -Wno-unused-imports -Wno-redundant-constraints -Wno-unused-foralls #-}
 
 {-# LANGUAGE AllowAmbiguousTypes #-}
@@ -65,13 +65,32 @@ axiom = unsafeCoerce Refl
 
 type DictRep :: Constraint -> Type
 type family DictRep c
--- newtype Dict c = Dict { unDict :: DictRep c }
 
 type WithDict :: Constraint -> Type -> Type
-newtype WithDict c r = WithDict (c => r)
+newtype WithDict c r = WithDict { unWithDict :: c => r }
+
+reifyDict :: forall c. c => DictRep c
+reifyDict = unWithDict @c @(DictRep c) (unsafeCoerce (id @(DictRep c)))
+{-# INLINE reifyDict #-}
+
 reflectDict :: forall c r. DictRep c -> (c => r) -> r
 reflectDict d x = unsafeCoerce (WithDict @c @r x) $! d
 {-# INLINE reflectDict #-}
+
+data Dict' c = c => Dict'
+
+-- | Reifies a typeclass dictionary as a value. The main advantage to this is that it can be
+-- UNPACKed when stored in another datatype.
+newtype Dict c = DictRep (DictRep c)
+pattern Dict :: forall c. () => c => Dict c
+pattern Dict <- DictRep ((\d -> reflectDict @c @(Dict' c) d Dict') -> Dict')
+  where Dict = DictRep (reifyDict @c)
+{-# COMPLETE Dict #-}
+
+instance With (Dict c) where
+  type WithC (Dict c) = c
+  with Dict x = x
+  {-# INLINE with #-}
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -236,15 +255,6 @@ instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
   reifySubIndex = reifySubIndex @effs1 @effs3 + 1
   {-# INLINE reifySubIndex #-}
 
-type (:<<:) :: [Effect] -> [Effect] -> TYPE 'IntRep
-newtype effs1 :<<: effs2 = SubIndex# Int#
-
-reifySubIndex# :: forall effs1 effs2. effs1 :<< effs2 => effs1 :<<: effs2
-reifySubIndex# = let !(I# idx) = reifySubIndex @effs1 @effs2 in SubIndex# idx
-
-reflectSubIndex# :: forall effs1 effs2 r. effs1 :<<: effs2 -> (effs1 :<< effs2 => r) -> r
-reflectSubIndex# (SubIndex# idx) = reflectDict @(effs1 :<< effs2) (I# idx)
-
 type Depth :: FramesK -> Constraint
 class Depth fs where
   reifyDepth :: Int
@@ -364,7 +374,7 @@ data effss :=>> fs where
 type (:~>>) :: [[Effect]] -> [Effect] -> Type
 data effss :~>> effs where
   Run :: '[effs] :~>> effs
-  Lift :: effs1 :<<: effs2
+  Lift :: {-# UNPACK #-} Dict (effs1 :<< effs2)
        -> (effs2 ': effss) :~>> effs3
        -> (effs1 ': effs2 ': effss) :~>> effs3
   LiftH :: {-# UNPACK #-} RelativeHandling eff effs i effs2
@@ -527,9 +537,9 @@ replayRemappings
   -- ^ Note: this runs in 'ST', but it doesn’t mutate any state, it only needs read-ordering
   -- guarantees.
 replayRemappings Run ts _ = pure $! PushTargets ts NoTargetss
-replayRemappings (Lift idx trs) ts fs = do
+replayRemappings (Lift subIndex trs) ts fs = do
   tss <- replayRemappings trs ts fs
-  reflectSubIndex# idx $
+  with subIndex $
     pure $! PushTargets (dropTargets $ peekTargets tss) tss
 replayRemappings (LiftH (idx :: RelativeHandling eff effs2 i effs3) trs) ts1 fs = do
   tss <- replayRemappings trs ts1 fs
@@ -565,7 +575,7 @@ lift :: effs1 :<< effs2 => Eff effs1 ~> Eff effs2
 lift (Eff m) = Eff \k (Context ts1 tss1 trs1 fs1) ->
   m (\tops a (Context _ (PushTargets ts2 tss2) (popRemapping -> trs2) fs2) ->
        k tops a (Context ts2 tss2 trs2 fs2))
-    (Context (dropTargets ts1) (PushTargets ts1 tss1) (Lift reifySubIndex# trs1) fs1)
+    (Context (dropTargets ts1) (PushTargets ts1 tss1) (Lift Dict trs1) fs1)
 
 -- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
 -- behaviorally identical to just using 'lift', but the restricted type can produce better type
