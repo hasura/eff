@@ -209,6 +209,17 @@ topsTrans :: fs1 ^~ fs2 -> fs2 ^~ fs3 -> fs1 ^~ fs3
 topsTrans _ _ = UnsafeTopsEq void#
 {-# INLINE topsTrans #-}
 
+data TargetsOperation
+  = RUN_CELL Type
+  | LIFT
+  | LIFT_H
+
+type ReplayRemappings :: [TargetsOperation] -> FramesK -> FramesK
+type family ReplayRemappings ops fs where
+  ReplayRemappings '[] fs = fs
+  ReplayRemappings ('RUN_CELL s ': ops) fs = 'CELL s (ReplayRemappings ops fs)
+  ReplayRemappings (_ ': ops) fs = ReplayRemappings ops fs
+
 -- | The primitive state pseudo-effect, which provides access to a single cell of mutable state of
 -- type @s@. Unlike real effects, 'Cell' only has one handler, 'runCell'. Users should not use
 -- 'Cell' directly, but should instead use the ordinary 'State' effect; the default handler for
@@ -301,9 +312,13 @@ withDepthFromSub :: forall fs1 fs2 r. fs1 :<<# fs2 => (Depth fs1 => r) -> r
 withDepthFromSub = reflectDict @(Depth fs1) (reifySubIndexF @fs1 @fs2 + 1)
 {-# INLINE withDepthFromSub #-}
 
-withWeakenSubIndex :: forall f fs1 fs2 r. f fs1 :<<# fs2 => (fs1 :<<# fs2 => r) -> r
-withWeakenSubIndex = reflectDict @(fs1 :<<# fs2) (reifySubIndexF @(f fs1) @fs2 - 1)
-{-# INLINE withWeakenSubIndex #-}
+withWeakenSubIndexL :: forall f fs1 fs2 r. f fs1 :<<# fs2 => (fs1 :<<# fs2 => r) -> r
+withWeakenSubIndexL = reflectDict @(fs1 :<<# fs2) (reifySubIndexF @(f fs1) @fs2 - 1)
+{-# INLINE withWeakenSubIndexL #-}
+
+withWeakenSubIndexR :: forall fs1 f fs2 r. fs1 :<<# fs2 => (fs1 :<<# f fs2 => r) -> r
+withWeakenSubIndexR = reflectDict @(fs1 :<<# f fs2) (reifySubIndexF @fs1 @fs2)
+{-# INLINE withWeakenSubIndexR #-}
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -356,14 +371,10 @@ type (:->>) :: [Effect] -> FramesK -> Type
 newtype effs :->> fs = Targets { unTargets :: PrimArray Int }
 -- TODO: Represent (:->>) in chunks if it gets too long.
 
-data TargetsOperation
-  = RUN_CELL Type
-  | LIFT
-  | LIFT_H
-
 type TargetsStack :: [[Effect]] -> [TargetsOperation] -> FramesK -> Type
 data TargetsStack effss ops fs where
-  TSRun :: {-# UNPACK #-} effs :->> fs -> TargetsStack '[effs] '[] fs
+  TSStart :: {-# UNPACK #-} effs :->> fs -> TargetsStack '[effs] '[] fs
+  -- TSPush
   TSRunCell
     :: {-# UNPACK #-} (Cell s ': effs) :->> 'CELL s fs
     -> TargetsStack (effs ': effss) ops fs
@@ -550,29 +561,22 @@ peekTargets = \case
 -- -------------------------------------------------------------------------------------------------
 -- remappings
 
-type ReplayRemappings :: [TargetsOperation] -> FramesK -> FramesK
-type family ReplayRemappings ops fs where
-  ReplayRemappings '[] fs = fs
-  ReplayRemappings ('RUN_CELL s ': ops) fs = 'CELL s (ReplayRemappings ops fs)
-  ReplayRemappings (_ ': ops) fs = ReplayRemappings ops fs
-
 replayRemappings
-  :: forall effss1 ops1 effs fs1 fs2
-   . fs1 :<<# fs2
-  => TargetRemappings effss1 ops1 effs
-  -> effs :->> fs1
-  -> Frames fs2
-  -> ST (S fs2) (TargetsStack effss1 ops1 fs2)
+  :: forall effss1 ops1 effs fs1
+   . TargetRemappings effss1 ops1 effs
+  -> effs :->> DropNonPrompts fs1
+  -> Frames fs1
+  -> ST (S fs1) (TargetsStack effss1 ops1 fs1)
   -- ^ Note: this runs in 'ST', but it doesn’t mutate any state, it only needs read-ordering
   -- guarantees.
 replayRemappings trs1 ts fs = undefined -- FIXME
-  -- where
-  --   go :: forall effss2 ops2 r
-  --       . TargetRemappings effss2 ops2 effs
-  --      -> (TargetsStack effss2 ops2 (ReplayRemappings ops2 fs) -> ST (S fs) r)
-  --      -> ST (S fs) r
-  --   go trs2 k = case trs2 of
-  --     TRRun -> k $! TSRun ts
+  where
+    go :: forall effss2 ops2 fs2
+        . (DropNonPrompts fs1 ~ DropNonPrompts fs2, fs2 :<<# fs1)
+       => TargetRemappings effss2 ops2 effs
+       -> ST (S fs2) (TargetsStack effss2 ops2 fs2)
+    go trs2 = case trs2 of
+      TRRun -> pure $! TSRun ts
 
 -- replayRemappings TRRun ts _ = pure $! TSRun ts
 -- replayRemappings (TRRunCell trs) ts fs = do
@@ -734,7 +738,7 @@ abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' 
 abort a = Eff \_ (Context tss1 _ (fs1 :: Frames fs1)) ->
   withHandling @eff @effs' (peekTargets tss1) \(_ :: Proxy# effss) (_ :: Proxy# ops) ->
   lookupFrame @('PROMPT eff effs i effss ops) fs1 \(_ :: Proxy# fs2) p ->
-  withWeakenSubIndex @('PROMPT eff effs i effss ops) @fs2 @fs1 $
+  withWeakenSubIndexL @('PROMPT eff effs i effss ops) @fs2 @fs1 $
   with (rootsEq @fs2 @fs1) do
     fs2 <- dropFrames fs1
     pCont p topsRefl a (Context (pTargetss p) (pRemappings p) fs2)
@@ -767,8 +771,7 @@ data Continuation a fs eff effs i = Continuation
   , cCapturedFrames :: {-# UNPACK #-} SmallArray Any
   -- ^ An array of 'CapturedFrame's, one per element of @fs@.
   , cCont :: forall effss ops fs1 fs2
-           . ( fs2 ~ RestoreFrames fs ('PROMPT eff effs i effss ops fs1)
-             , DropNonPrompts fs2 :<<# fs2 )
+           . fs2 ~ RestoreFrames fs ('PROMPT eff effs i effss ops fs1)
           => Proxy# effss -> Proxy# ops -> Proxy# fs1 -> a
           -> VisibleEffects (DropNonPrompts fs2) :->> DropNonPrompts fs2
           -> Frames fs2
@@ -834,8 +837,7 @@ captureContinuation k1 trs (Frames len_fs fs1) k2 = do
         . ( pfs1 ~ 'PROMPT eff effs1 i effss1 ops1 fs1
           , pfs3 ~ 'PROMPT eff effs1 i effss3 ops3 fs3
           , fs2 ~ RestoreFrames cfs pfs1
-          , fs4 ~ RestoreFrames cfs pfs3
-          , DropNonPrompts fs4 :<<# fs4 )
+          , fs4 ~ RestoreFrames cfs pfs3 )
        => Proxy# effss3 -> Proxy# ops3 -> Proxy# fs3
        -> a
        -> VisibleEffects (DropNonPrompts fs4) :->> DropNonPrompts fs4
@@ -861,15 +863,14 @@ restoreContinuation (Continuation h cfs k1) k2 a (Context tss trs fs1) =
   where
     restoreFrames
       :: forall fs2
-       . DropNonPrompts fs2 :<<# fs2
-      => Int
+       . Int
       -> VisibleEffects (DropNonPrompts fs2) :->> DropNonPrompts fs2
       -> Frames fs2
       -> ST (S fs2) (R fs2)
     restoreFrames idx ts2 fs2
       | idx < sizeofSmallArray cfs = do
           let !(# Any cf #) = indexSmallArray cfs idx
-          (Dict, ts3, fs3) <- restoreFrame cf ts2 fs2
+          (ts3, fs3) <- restoreFrame cf ts2 fs2
           restoreFrames (idx + 1) ts3 fs3
       | otherwise =
           with (axiom @fs2 @(RestoreFrames cfs ('PROMPT eff effs i effss ops fs1))) $
@@ -881,22 +882,20 @@ captureFrame (Cell s) = CCell s
 
 restoreFrame
   :: forall f fs
-   . DropNonPrompts fs :<<# fs
-  => CapturedFrame f fs
+   . CapturedFrame f fs
   -> VisibleEffects (DropNonPrompts fs) :->> DropNonPrompts fs
   -> Frames fs
   -> ST (S fs)
-     ( Dict (DropNonPrompts (f fs) :<<# f fs)
-     , VisibleEffects (DropNonPrompts (f fs)) :->> DropNonPrompts (f fs)
+     ( VisibleEffects (DropNonPrompts (f fs)) :->> DropNonPrompts (f fs)
      , Frames (f fs) )
 restoreFrame (CCell s) ts fs1 = withDepthOf fs1 do
   fs2 <- pushFrame (Cell s) fs1
-  pure (Dict, ts, fs2)
+  pure (ts, fs2)
 restoreFrame (CPrompt k2 h trs) ts1 fs1 = withDepthOf fs1 do
   tss <- replayRemappings trs ts1 fs1
   let ts2 = pushNewTarget $ peekTargets tss
   fs2 <- pushFrame (Prompt k2 h ts2 tss trs) fs1
-  pure (Dict, ts2, fs2)
+  pure (ts2, fs2)
 
 shift
   :: forall eff effs i effs' a. Handling eff effs i effs'
@@ -905,7 +904,7 @@ shift f = Eff \k1 (Context tss1 trs1 (fs1 :: Frames fs1)) ->
   withHandling @eff @effs' (peekTargets tss1) \(_ :: Proxy# effss) (_ :: Proxy# ops) ->
   lookupFrame @('PROMPT eff effs i effss ops) fs1 \(_ :: Proxy# fs2) p ->
   captureContinuation @eff @effs @i @effss @ops @fs2 k1 trs1 fs1 \cont ->
-  withWeakenSubIndex @('PROMPT eff effs i effss ops) @fs2 @fs1 $
+  withWeakenSubIndexL @('PROMPT eff effs i effss ops) @fs2 @fs1 $
   with (rootsEq @fs2 @fs1) do
     let m :: Eff effs i
         m = f \a -> Eff \k2 ctx -> restoreContinuation cont k2 a ctx
