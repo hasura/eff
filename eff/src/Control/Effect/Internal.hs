@@ -1,5 +1,5 @@
 -- {-# OPTIONS_GHC -fno-max-relevant-binds #-}
-{-# OPTIONS_GHC -fmax-relevant-binds=20 #-}
+-- {-# OPTIONS_GHC -fmax-relevant-binds=20 #-}
 {-# OPTIONS_GHC -Wno-unused-imports -Wno-redundant-constraints -Wno-unused-foralls #-}
 
 {-# LANGUAGE AllowAmbiguousTypes #-}
@@ -12,8 +12,12 @@
 
 module Control.Effect.Internal where
 
-import Control.Exception (assert)
+import qualified Control.Effect.Internal.Continuation as IO
+import qualified Control.Exception as IO
+
+import Control.Exception (Exception)
 import Control.Monad
+import Control.Monad.Primitive
 import Control.Monad.ST
 import Control.Natural (type (~>))
 import Data.Coerce
@@ -21,9 +25,10 @@ import Data.Kind (Constraint, Type)
 import Data.Foldable
 import Data.Functor
 import Data.Type.Equality ((:~:)(..))
-import GHC.Exts (Any, Int(..), Int#, Proxy#, RealWorld, RuntimeRep(..), SmallMutableArray#, State#, TYPE, Void#, proxy#, runRW#, void#)
+import GHC.Exts (Any, Int(..), Int#, Proxy#, RealWorld, RuntimeRep(..), SmallMutableArray#, State#, TYPE, Void#, (+#), proxy#, runRW#, void#)
 import GHC.TypeLits (ErrorMessage(..), Nat, TypeError)
 import Unsafe.Coerce (unsafeCoerce)
+import System.IO.Unsafe (unsafeDupablePerformIO)
 
 import Control.Effect.Internal.Debug
 import Control.Effect.Internal.Equality
@@ -55,23 +60,549 @@ axiom :: a :~: b
 axiom = unsafeCoerce Refl
 {-# INLINE axiom #-}
 
--- type UnboxedRep :: Type -> RuntimeRep
--- type family UnboxedRep a
--- type Unboxed :: forall a -> TYPE (UnboxedRep a)
--- type family Unboxed a
---
--- type instance UnboxedRep Int = IntRep
--- type instance Unboxed Int = Int#
-
 type DictRep :: Constraint -> Type
 type family DictRep c
--- newtype Dict c = Dict { unDict :: DictRep c }
 
 type WithDict :: Constraint -> Type -> Type
-newtype WithDict c r = WithDict (c => r)
+newtype WithDict c r = WithDict { unWithDict :: c => r }
+
+reifyDict :: forall c. c => DictRep c
+reifyDict = unWithDict @c @(DictRep c) (unsafeCoerce (id @(DictRep c)))
+{-# INLINE reifyDict #-}
+
 reflectDict :: forall c r. DictRep c -> (c => r) -> r
 reflectDict d x = unsafeCoerce (WithDict @c @r x) $! d
 {-# INLINE reflectDict #-}
+
+data Dict' c = c => Dict'
+
+-- | Reifies a typeclass dictionary as a value. The main advantage to this is that it can be
+-- UNPACKed when stored in another datatype.
+newtype Dict c = DictRep (DictRep c)
+pattern Dict :: forall c. () => c => Dict c
+pattern Dict <- DictRep ((\d -> reflectDict @c @(Dict' c) d Dict') -> Dict')
+  where Dict = DictRep (reifyDict @c)
+{-# COMPLETE Dict #-}
+
+instance With (Dict c) where
+  type WithC (Dict c) = c
+  with Dict x = x
+  {-# INLINE with #-}
+
+-- -- -------------------------------------------------------------------------------------------------
+--
+-- type IsPrefixOf :: [k] -> [k] -> TYPE ('TupleRep '[])
+-- newtype IsPrefixOf xs ys = UnsafeIsPrefixOf# Void#
+-- {-# COMPLETE IsPrefixOfNil, IsPrefixOfCons #-}
+--
+-- pattern IsPrefixOfNil :: IsPrefixOf '[] xs
+-- pattern IsPrefixOfNil <- _
+--   where IsPrefixOfNil = UnsafeIsPrefixOf# void#
+--
+-- pattern IsPrefixOfCons
+--   :: forall x xs ys. () => forall zs. ys ~ (x ': zs) => IsPrefixOf xs zs -> IsPrefixOf (x ': xs) ys
+-- pattern IsPrefixOfCons pfx <-
+--   ((\_ -> (# unsafeRefl# void#, UnsafeIsPrefixOf# void# #)
+--        :: forall zs. (# ys ~# (x ': zs), IsPrefixOf xs zs #)
+--    ) -> (# Refl#, pfx #))
+--   where IsPrefixOfCons _ = UnsafeIsPrefixOf# void#
+
+-- -------------------------------------------------------------------------------------------------
+
+type (:<) :: Effect -> [Effect] -> Constraint
+class eff :< effs where
+  reifyIndex :: Int
+instance {-# OVERLAPPING #-} eff :< (eff ': effs) where
+  reifyIndex = 0
+  {-# INLINE reifyIndex #-}
+instance eff :< effs => eff :< (eff' ': effs) where
+  reifyIndex = reifyIndex @eff @effs + 1
+  {-# INLINE reifyIndex #-}
+
+type (:<<) :: [Effect] -> [Effect] -> Constraint
+class effs1 :<< effs2 where
+  reifySubIndex :: Int
+instance {-# OVERLAPPING #-} effs :<< effs where
+  reifySubIndex = 0
+  {-# INLINE reifySubIndex #-}
+instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
+  reifySubIndex = reifySubIndex @effs1 @effs3 + 1
+  {-# INLINE reifySubIndex #-}
+
+-- type Depth :: [FrameK] -> Constraint
+-- class Depth fs where
+--   reifyDepth :: Int
+-- instance Depth '[] where
+--   reifyDepth = 0
+--   {-# INLINE reifyDepth #-}
+-- instance Depth fs => Depth (f ': fs) where
+--   reifyDepth = reifyDepth @fs + 1
+--   {-# INLINE reifyDepth #-}
+--
+-- type (:<#) :: FrameK -> [FrameK] -> Constraint
+-- class f :<# fs where
+--   reifyIndexF :: Int
+-- instance {-# OVERLAPPING #-} Depth (f ': fs) => f :<# (f ': fs) where
+--   reifyIndexF = reifyDepth @(f ': fs) - 1
+--   {-# INLINE reifyIndexF #-}
+-- instance f :<# fs => f :<# (f' ': fs) where
+--   reifyIndexF = reifyIndexF @f @fs
+--   {-# INLINE reifyIndexF #-}
+--
+-- type (:<<#) :: [FrameK] -> [FrameK] -> Constraint
+-- class fs1 :<<# fs2 where
+--   reifySubIndexF :: Int
+-- instance {-# OVERLAPPING #-} Depth fs => fs :<<# fs where
+--   reifySubIndexF = reifyDepth @fs - 1
+--   {-# INLINE reifySubIndexF #-}
+-- instance (fs2 ~ (f ': fs3), fs1 :<<# fs3) => fs1 :<<# fs2 where
+--   reifySubIndexF = reifySubIndexF @fs1 @fs3
+--   {-# INLINE reifySubIndexF #-}
+
+type instance DictRep (eff :< effs) = Int
+type instance DictRep (effs1 :<< effs2) = Int
+-- type instance DictRep (Depth fs) = Int
+-- type instance DictRep (f :<# fs) = Int
+-- type instance DictRep (fs1 :<<# fs2) = Int
+
+-- withWeakenSubIndex :: forall f fs1 fs2 r. (f ': fs1) :<<# fs2 => (fs1 :<<# fs2 => r) -> r
+-- withWeakenSubIndex = reflectDict @(fs1 :<<# fs2) (reifySubIndexF @(f ': fs1) @fs2 - 1)
+-- {-# INLINE withWeakenSubIndex #-}
+
+-- -------------------------------------------------------------------------------------------------
+
+type Effect = (Type -> Type) -> Type -> Type
+
+-- data FrameK
+--   = CELL Type
+--   | PROMPT Effect [Effect] Type [[Effect]]
+--
+-- type FrameEffect :: FrameK -> Effect
+-- type family FrameEffect f where
+--   FrameEffect ('CELL s) = Cell s
+--   FrameEffect ('PROMPT eff _ _ _) = eff
+
+-- | The primitive state pseudo-effect, which provides access to a single cell of mutable state of
+-- type @s@. Unlike real effects, 'Cell' only has one handler, 'runCell'. Users should not use
+-- 'Cell' directly, but should instead use the ordinary 'State' effect; the default handler for
+-- 'State' is internally implemented as a small wrapper around 'Cell'.
+type Cell :: Type -> Effect
+type role Cell representational _ _
+data Cell s :: Effect
+
+type family Handles eff :: Constraint where
+  Handles (Cell s) = NoHandling Cell (Cell s)
+  Handles _ = ()
+type family NoHandling c eff where
+  NoHandling c eff = TypeError
+    ( 'Text "no instance for ‘Handles (" ':<>: 'ShowType eff ':<>: 'Text ")’;"
+    ':$$: 'Text "  " ':<>: 'ShowType c ':<>: 'Text " is a primitive effect and cannot be handled" )
+
+-- | Primitive effects are uninhabited, so we can obtain a proof of 'Handles' by forcing an effect
+-- value.
+handles :: eff m a -> Handles eff :~: (() :: Constraint)
+handles !_ = axiom
+{-# INLINE handles #-}
+
+-- withHandlesImpliesPrompt
+--   :: forall f eff m a r. (Handles eff, eff ~ FrameEffect f)
+--   => (forall effs i effss. f ~ 'PROMPT eff effs i effss => Proxy# ('PROMPT eff effs i effss) -> r)
+--   -> r
+-- withHandlesImpliesPrompt k =
+--   ( with (axiom @f @('PROMPT eff effs i effss))
+--   $ k @effs @i @effss proxy#
+--   ) :: forall (effs :: [Effect]) (i :: Type) (effss :: [[Effect]]). r
+
+-- -------------------------------------------------------------------------------------------------
+
+newtype Eff effs a = Eff { unEff :: PromptId -> Targets effs -> IO a }
+
+-- -- | This wrapper type is necessary to get the 'v:Eff' pattern synonym to typecheck, as otherwise it
+-- -- would require impredicative polymorphism.
+-- --
+-- -- FIXME: Not needed anymore, no longer impredicative!
+-- newtype EffAsIO effs a = EffAsIO (Context effs -> IO (Context effs, a))
+--
+-- -- | A pattern synonym that makes 'Eff' look like it’s defined in terms of 'IO' rather than in terms
+-- -- of 'State#', since the former is easier to work with (and the optimizer will remove the
+-- -- wrapping/unwrapping).
+-- pattern Eff :: (Context effs -> IO (Context effs, a)) -> Eff effs a
+-- pattern Eff { unEff } <- ((\(Eff# f) -> EffAsIO \ctx -> primitive \s1 -> case f ctx s1 of (# s2, ctx2, a #) -> (# s2, (ctx2, a) #)) -> EffAsIO unEff)
+--   where Eff f = Eff# \ctx1 s1 -> case internal (f ctx1) s1 of (# s2, (ctx2, a) #) -> (# s2, ctx2, a #)
+-- {-# COMPLETE Eff #-}
+--
+-- type Context :: [Effect] -> Type
+-- data Context effs = Context {-# UNPACK #-} Int {-# UNPACK #-} (Targets effs)
+--   -- (TargetsStack effss fs) {-# UNPACK #-} (Frames fs)
+
+-- type Context :: [Effect] -> [[Effect]] -> Type
+-- data Context effs effss = forall fs. Context
+--   {-# UNPACK #-} (Targets effs fs) (TargetsStack effss fs) {-# UNPACK #-} (Frames fs)
+--
+-- type Frames :: [FrameK] -> Type
+-- data Frames fs = Frames {-# UNPACK #-} Int {-# UNPACK #-} (SmallMutableArray RealWorld Any)
+--
+-- type Frame :: FrameK -> [FrameK] -> Type
+-- type family Frame f fs where
+--   Frame ('CELL s) _ = s
+--   Frame ('PROMPT eff effs i effss) fs = Prompt eff effs i effss fs
+
+data Prompt eff effs i = Prompt
+  { pHandler :: forall effs'. Handling# eff effs i effs' -> eff (Eff effs') ~> Eff effs'
+  }
+
+type Targets :: [Effect] -> Type
+type role Targets nominal
+newtype Targets effs = Targets (SmallArray Any)
+
+-- type Target :: Effect -> [FrameK] -> Type
+-- newtype Target eff fs = Target Int
+--
+-- type Targets :: [Effect] -> [FrameK] -> Type
+-- newtype Targets effs fs = Targets (PrimArray Int)
+
+-- type TargetsStack :: [[Effect]] -> [FrameK] -> Type
+-- data TargetsStack effss fs where
+--   EmptyTargetsStack :: TargetsStack '[] fs
+--   PushTargets ::
+--     { peekTargets :: {-# UNPACK #-} Targets effs fs
+--     , popTargets :: TargetsStack effss fs
+--     } -> TargetsStack (effs ': effss) fs
+
+data AbortException = AbortException {-# UNPACK #-} Int ~Any
+instance Show AbortException where
+  show (AbortException _ _) = "AbortException"
+instance Exception AbortException
+
+newtype PromptId = PromptId# Int#
+pattern PromptId :: Int -> PromptId
+pattern PromptId{ unPromptId } <- PromptId# (I# -> unPromptId)
+  where PromptId (I# n) = PromptId# n
+
+newtype Winder effs1 effs2 a b = Winder
+  { winder :: PromptId -> Targets effs1 -> IO (Targets effs2, Unwinder effs1 effs2 a b) }
+
+data Unwinder effs1 effs2 a b = Unwinder
+  { returnUnwinder :: a -> IO b
+  , abortUnwinder :: IO ()
+  , captureUnwinder :: IO (Winder effs1 effs2 a b) }
+-- TODO: Make Winder/Unwinder operate directly on State# threads and make Unwinder an unboxed tuple
+-- to ensure wind doesn’t pass closures.
+
+data Request effs1 a
+  = Return ~a
+  | forall b effs2 c. Capture
+      PromptId
+      -- ^ The prompt we’re capturing up to.
+      (b -> Eff effs1 (Request effs1 a))
+      -- ^ The continuation up to this prompt.
+      ((b -> Eff effs2 c) -> Eff effs2 c)
+      -- ^ The metacontinuation.
+-- TODO: Make continuation primops levity-polymorphic so we can use an unboxed sum type for Request.
+
+-- | The primitive way to push a prompt.
+wind :: forall effs1 effs2 a b. Winder effs1 effs2 a b -> Eff effs2 (Request effs2 a) -> Eff effs1 b
+wind Winder{ winder } (Eff m) = Eff \pid1 ts1 -> do
+  -- Start by applying the winder.
+  let pid2 = PromptId (unPromptId pid1 + 1)
+  (ts2, Unwinder{ returnUnwinder, captureUnwinder }) <- winder pid2 ts1
+  -- Push a new prompt frame and invoke the delimited computation.
+  IO.reset (m pid2 ts2) >>= \case
+    -- Normal return; call the unwinder and return the result.
+    Return a -> returnUnwinder a
+    -- Someone called shift, so we’re capturing the continuation.
+    Capture target k1 (f :: (c -> Eff effs3 d) -> Eff effs3 d) -> do
+      -- Start by calling the capture unwinder.
+      rewinder <- captureUnwinder
+      -- Compose the continuation with the rewinder.
+      let !k2 = wind rewinder . k1
+      if unPromptId target == unPromptId pid2
+        -- We’re capturing up to this prompt, so we’re done unwinding; invoke the metacontinuation.
+        then with (axiom @effs1 @effs3) $ with (axiom @b @d) $ unEff (f k2) pid1 ts1
+        -- We’re capturing up to a parent prompt, so capture the next continuation slice.
+        else IO.shift \k# -> do
+          -- Extend the continuation up to this prompt by composing it with the continuation up to
+          -- the next prompt.
+          let k3 b = Eff \pid3 ts3 -> IO.applyContinuation k# $ unEff (k2 b) pid3 ts3
+          pure $! Capture target k3 f
+
+-- -- -------------------------------------------------------------------------------------------------
+-- -- frames
+--
+-- -- | A restricted form of 'unsafeCoerce' that only works for converting to/from 'Any'. Still just as
+-- -- unsafe, but makes it slightly more difficult to accidentally misuse.
+-- pattern Any :: forall a. a -> Any
+-- pattern Any a <- (unsafeCoerce -> a)
+--   where Any = unsafeCoerce
+-- {-# COMPLETE Any #-}
+--
+-- -- | Used to explicitly overwrite references to values that should not be retained by the GC.
+-- null# :: Any
+-- null# = Any ()
+--
+-- newEmptyFrames :: IO (Frames '[])
+-- newEmptyFrames = Frames 0 <$> newSmallArray 32 null#
+--
+-- withDepthOf :: forall fs r. Frames fs -> (Depth fs => r) -> r
+-- withDepthOf (Frames len _) = reflectDict @(Depth fs) len
+--
+-- -- peekFrame :: Frames (f fs) -> ST (S fs) (Frame f fs)
+-- -- peekFrame (Frames len fs) = readSmallArray fs (len - 1) <&> \(Any f) -> f
+--
+-- lookupFrame
+--   :: forall f fs2 r. (DebugCallStack, f :<# fs2)
+--   => Frames fs2
+--   -> (forall fs1. (f ': fs1) :<<# fs2 => Proxy# fs1 -> Frame f fs1 -> IO r)
+--   -> IO r
+-- lookupFrame (Frames len fs) k = do
+--   { let idx = reifyIndexF @f @fs2
+--   ; assertM $ idx < len
+--   ; Any f <- readSmallArray fs idx
+--   ; reflectDict @((f ': fs1) :<<# fs2) idx
+--   $ k @fs1 proxy# f
+--   } :: forall (fs1 :: [FrameK]). IO r
+--
+-- -- | Looks up a 'Frame' given a 'Target' into a stack of 'Frames'. The result is returned by passing
+-- -- it to the given continuation so that the @f@ and @fs2@ variables can be bound existentially.
+-- indexFrame
+--   :: forall eff fs1 r. DebugCallStack => Target eff fs1 -> Frames fs1
+--   -> (forall f fs2. (eff ~ FrameEffect f, (f ': fs2) :<<# fs1)
+--       => Proxy# (f ': fs2) -> Frame f fs2 -> IO r)
+--   -> IO r
+-- indexFrame (Target idx) (Frames len fs) k = do
+--   { assertM $ idx < len
+--   ; with (axiom @eff @(FrameEffect f)) do
+--   { Any f <- readSmallArray fs idx
+--   ; reflectDict @((f ': fs2) :<<# fs1) idx
+--   $ k @f @fs2 proxy# f
+--   }} :: forall (f :: FrameK) (fs2 :: [FrameK]). IO r
+--
+-- pushFrame :: DebugCallStack => Frame f fs -> Frames fs -> IO (Frames (f ': fs))
+-- pushFrame f (Frames len fs1) = do
+--   fs2 <- if
+--     | len == sizeofSmallMutableArray fs1 -> do
+--         -- out of space, resize and copy
+--         fs2 <- newSmallArray (len * 2) null#
+--         copySmallMutableArray fs2 0 fs1 0 len
+--         pure fs2
+--     | otherwise -> do
+--         -- no need to resize, reuse the input array
+--         assertM $ len >= 0
+--         assertM $ len < sizeofSmallMutableArray fs1
+--         pure fs1
+--   assertM $ len + 1 <= sizeofSmallMutableArray fs2
+--   writeSmallArray fs2 len (Any f)
+--   pure $! Frames (len + 1) fs2
+--
+-- popFrame :: DebugCallStack => Frames (f ': fs) -> IO (Frame f fs, Frames fs)
+-- popFrame (Frames len fs) = do
+--   -- Note that we never resize the frames stack when popping, only when pushing, so the size of the
+--   -- frames stack will never decrease. Theoretically, if someone created a giant frames stack very
+--   -- briefly, then executed a long-lived computation with a much smaller stack, this would leak
+--   -- memory. However, such a usage pattern seems unlikely, so for now, we never decrease the size of
+--   -- the stack.
+--   Any f <- readSmallArray fs (len - 1)
+--   writeSmallArray fs len null#
+--   pure (f, Frames (len - 1) fs)
+--
+-- -- dropFrames :: forall fs1 fs2. (DebugCallStack, fs1 :<<# fs2) => Frames fs2 -> ST (S fs2) (Frames fs1)
+-- -- dropFrames (Frames len1 fs) = with (rootsEq @fs1 @fs2) do
+-- --   let len2 = reifySubIndexF @fs1 @fs2
+-- --   assertM $ len2 <= len1
+-- --   for_ [len2..len1-1] \idx ->
+-- --     writeSmallArray fs idx null#
+-- --   pure $ Frames len2 fs
+
+-- -- -------------------------------------------------------------------------------------------------
+-- -- targets
+--
+-- newTarget :: forall f fs. f :<# fs => Target (FrameEffect f) fs
+-- newTarget = Target $ reifyIndexF @f @fs
+--
+-- noTargets :: Targets '[] fs
+-- noTargets = Targets mempty
+--
+-- weakenTargets :: fs1 :<<# fs2 => Targets effs fs1 -> Targets effs fs2
+-- weakenTargets (Targets ts) = Targets ts
+--
+-- lookupTarget :: forall eff effs fs. (DebugCallStack, eff :< effs) => Targets effs fs -> Target eff fs
+-- lookupTarget (Targets ts) = Target $ indexPrimArray ts (reifyIndex @eff @effs)
+--
+-- pushTarget :: Target eff fs -> Targets effs fs -> Targets (eff ': effs) fs
+-- pushTarget (Target t) (Targets ts1) = Targets $ runPrimArray do
+--   let len = sizeofPrimArray ts1
+--   ts2 <- newPrimArray (len + 1)
+--   writePrimArray ts2 0 t
+--   copyPrimArray ts2 1 ts1 0 len
+--   pure ts2
+--
+-- -- | A convenience operation for the common case of pushing a new target that maps an effect to a
+-- -- newly-introduced frame.
+-- pushNewTarget :: forall f effs fs. Depth fs => Targets effs fs -> Targets (FrameEffect f ': effs) (f ': fs)
+-- pushNewTarget = pushTarget (newTarget @f) . weakenTargets
+--
+-- dropTargets
+--   :: forall effs1 effs2 fs. (DebugCallStack, effs1 :<< effs2)
+--   => Targets effs2 fs -> Targets effs1 fs
+-- dropTargets (Targets ts) =
+--   let idx = reifySubIndex @effs1 @effs2
+--       len = sizeofPrimArray ts - idx
+--   in Targets $ clonePrimArray ts idx len
+
+-- -------------------------------------------------------------------------------------------------
+-- core Eff operations
+
+instance Functor (Eff effs) where
+  fmap f m = m >>= pure . f
+  {-# INLINE fmap #-}
+
+instance Applicative (Eff effs) where
+  pure a = Eff \_ _ -> pure a
+  {-# INLINE pure #-}
+  (<*>) = ap
+  {-# INLINE (<*>) #-}
+
+instance Monad (Eff effs) where
+  Eff m >>= f = Eff \pid ts -> m pid ts >>= \a -> unEff (f a) pid ts
+  {-# INLINE (>>=) #-}
+
+-- run :: Eff '[] a -> a
+-- run (Eff m) = unsafeDupablePerformIO do
+--   fs <- newEmptyFrames
+--   (_, a) <- m $! Context noTargets EmptyTargetsStack fs
+--   pure a
+--
+-- lift :: effs1 :<< effs2 => Eff effs1 ~> Eff effs2
+-- lift (Eff m) = Eff \(Context ts1 tss1 fs1) -> do
+--   let !ctx1 = Context (dropTargets ts1) (PushTargets ts1 tss1) fs1
+--   (Context _ (PushTargets ts2 tss2) fs2, a) <- m ctx1
+--   let !ctx2 = Context ts2 tss2 fs2
+--   pure (ctx2, a)
+--
+-- -- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
+-- -- behaviorally identical to just using 'lift', but the restricted type can produce better type
+-- -- inference.
+-- lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
+-- lift1 = lift
+-- {-# INLINE lift1 #-}
+
+-- -------------------------------------------------------------------------------------------------
+-- Handling
+
+type Handling :: Effect -> [Effect] -> Type -> [Effect] -> Constraint
+class Handling eff effs i effs' | eff effs' -> i effs where
+  reifyHandlerIndex :: Int
+type instance DictRep (Handling eff effs i effs') = Int
+
+-- reflectHandling
+--   :: forall eff effs1 effss i fs1 effs2 fs2 r. ('PROMPT eff effs1 i effss ': fs1) :<<# fs2
+--   => Targets effs2 fs2
+--   -- ^ A proof that this list of effects is fully handled by the current stack of frames.
+--   -> (Handling eff effs1 i effs2 => r) -> r
+-- reflectHandling !_ =
+--   reflectDict @(Handling eff effs1 i effs2) $ reifySubIndexF @('PROMPT eff effs1 i effss ': fs1) @fs2
+--
+-- withHandling
+--   :: forall eff effs' fs effs i r. Handling eff effs i effs'
+--   => Targets effs' fs
+--   -- ^ A proof that we’re in a context where the 'Handling' constraint actually applies.
+--   -> (forall effss. 'PROMPT eff effs i effss :<# fs => Proxy# effss -> r)
+--   -> r
+-- withHandling !_ k =
+--   ( reflectDict @('PROMPT eff effs i effss :<# fs) (reifyHandlerIndex @eff @effs @i @effs')
+--   $ k @effss proxy#
+--   ) :: forall (effss :: [[Effect]]). r
+
+type Handling# :: Effect -> [Effect] -> Type -> [Effect] -> TYPE 'IntRep
+newtype Handling# eff effs i effs' = Handling# { handlerIndex# :: Int# }
+-- TODO: Replace with Dict# abstraction?
+
+-- reifyHandling# :: forall eff effs i effs'. Handling eff effs i effs' => Handling# eff effs i effs'
+-- reifyHandling# = let !(I# n) = reifyHandlerIndex @eff @effs @i @effs' in Handling# n
+--
+-- reflectHandling#
+--   :: forall eff effs i effs' r. Handling# eff effs i effs' -> (Handling eff effs i effs' => r) -> r
+-- reflectHandling# (Handling# n) = reflectDict @(Handling eff effs i effs') (I# n)
+
+-- -- | See 'LiftH'.
+-- type RelativeHandling :: Effect -> [Effect] -> Type -> [Effect] -> Type
+-- newtype RelativeHandling eff effs i effs' = RelativeHandling Int
+--
+-- reifyRelativeHandling
+--   :: forall eff effs2 effs1 i fs. Handling eff effs1 i effs2
+--   => effs2 :->> fs -> Frames fs -> RelativeHandling eff effs1 i effs2
+-- reifyRelativeHandling !_ (Frames len _) =
+--   RelativeHandling (len - reifyHandlerIndex @eff @effs1 @i @effs2)
+--
+-- reflectRelativeHandling
+--   :: forall eff effs2 effs1 i fs r
+--    . effs2 :->> fs -> Frames fs -> RelativeHandling eff effs1 i effs2
+--   -> (Handling eff effs1 i effs2 => r) -> r
+-- reflectRelativeHandling !_ (Frames len _) (RelativeHandling idx) =
+--   reflectDict @(Handling eff effs1 i effs2) (len - idx)
+
+-- -------------------------------------------------------------------------------------------------
+-- Eff operations that use Handling
+
+-- send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
+-- send e = Eff \ctx@(Context ts _ fs) ->
+--   with (handles e) $
+--   indexFrame (lookupTarget @eff ts) fs \(_ :: Proxy# (f ': fs)) p ->
+--   withHandlesImpliesPrompt @f \(_ :: Proxy# ('PROMPT eff effs2 i effss)) ->
+--   reflectHandling @eff @effs2 @effss @i @fs ts $
+--     unEff (pHandler p reifyHandling# e) ctx
+--
+-- handle
+--   :: forall eff a effs. Handles eff
+--   => (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
+--   -> Eff (eff ': effs) a
+--   -> Eff effs a
+-- handle f (Eff m) = Eff \(Context ts1 tss1 (fs1 :: Frames fs1) :: Context effs effss1) ->
+--   withDepthOf fs1 do
+--     let ts2 :: Targets (eff ': effs) ('PROMPT eff effs a effss1 ': fs1)
+--         ts2 = pushNewTarget ts1
+--
+--         f1 :: Frame ('PROMPT eff effs a effss1) fs1
+--         f1 = Prompt
+--           { pHandler = \n e -> reflectHandling# n $ f e
+--           , pTargets = ts2
+--           , pTargetsStack = PushTargets ts1 tss1
+--           }
+--
+--     fs2 <- pushFrame f1 fs1
+--     let !ctx1 = Context ts2 EmptyTargetsStack fs2
+--     (Context _ _ (ffs3 :: Frames fs2), a) <- m ctx1
+--     with (axiom @('PROMPT eff effs a effss1 ': fs1) @fs2) do -- FIXME: bogus!!!
+--       (f3, fs3) <- popFrame ffs3
+--       let PushTargets ts3 tss3 = pTargetsStack f3
+--           !ctx2 = Context ts3 tss3 fs3
+--       pure (ctx2, a)
+--
+-- liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
+-- liftH (Eff m) = Eff \(Context ts1 tss1 fs1) ->
+--   withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
+--   lookupFrame @('PROMPT eff effs i effss) fs1 \_ p -> do
+--     let !ctx1 = Context (weakenTargets $ pTargets p) (PushTargets ts1 tss1) fs1
+--     (Context _ (PushTargets ts2 tss2) fs2, a) <- m ctx1
+--     let !ctx2 = Context ts2 tss2 fs2
+--     pure (ctx2, a)
+
+-- abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
+-- abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
+--   withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
+--   lookupFrame @('PROMPT eff effs i effss) fs1 \(_ :: Proxy# fs2) p ->
+--   withWeakenSubIndex @('PROMPT eff effs i effss) @fs2 @fs1 $
+--   with (rootsEq @fs2 @fs1) do
+--     let !(PushTargets ts2 tss2) = pTargetss p
+--         !trs2 = pRemappings p
+--     fs2 <- dropFrames fs1
+--     pCont p topsRefl a (Context ts2 tss2 trs2 fs2)
+
+-- -------------------------------------------------------------------------------------------------
+
+
+
+{-
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -80,14 +611,6 @@ type family xs ++ ys where
   (x ': xs) ++ ys = x ': (xs ++ ys)
 
 -- -------------------------------------------------------------------------------------------------
-
-type Effect = (Type -> Type) -> Type -> Type
-
-data FramesK
-  = ROOT Type -- ^ The type of the computation’s state token. Accessible via 'S'.
-         Type -- ^ The type of the computation’s final result. Accessible via 'R'.
-  | CELL Type FramesK
-  | PROMPT Effect [Effect] Type [[Effect]] FramesK
 
 type FrameK = FramesK -> FramesK
 
@@ -105,11 +628,6 @@ type family R fs where
 rootsEq :: forall fs1 fs2. fs1 :<<# fs2 => 'ROOT (S fs1) (R fs1) :~: 'ROOT (S fs2) (R fs2)
 rootsEq = reifySubIndexF @fs1 @fs2 `seq` axiom
 {-# INLINE rootsEq #-}
-
-type FrameEffect :: FrameK -> Effect
-type family FrameEffect f where
-  FrameEffect ('CELL s) = Cell s
-  FrameEffect ('PROMPT eff _ _ _) = eff
 
 -- | The list of effects made “visible” by the current stack of frames without any uses of 'liftH'
 -- or related operations.
@@ -184,111 +702,14 @@ topsTrans :: fs1 ^~ fs2 -> fs2 ^~ fs3 -> fs1 ^~ fs3
 topsTrans _ _ = UnsafeTopsEq void#
 {-# INLINE topsTrans #-}
 
--- | The primitive state pseudo-effect, which provides access to a single cell of mutable state of
--- type @s@. Unlike real effects, 'Cell' only has one handler, 'runCell'. Users should not use
--- 'Cell' directly, but should instead use the ordinary 'State' effect; the default handler for
--- 'State' is internally implemented as a small wrapper around 'Cell'.
-type Cell :: Type -> Effect
-data Cell s :: Effect
-
-type family Handles eff :: Constraint where
-  Handles (Cell s) = NoHandling Cell (Cell s)
-  Handles _ = ()
-type family NoHandling c eff where
-  NoHandling c eff = TypeError
-    ( 'Text "no instance for ‘" ':<>: 'ShowType eff ':<>: 'Text "’;"
-    ':$$: 'Text "  " ':<>: 'ShowType c ':<>: 'Text " is a primitive effect and cannot be handled" )
-
--- | Primitive effects are uninhabited, so we can obtain a proof of 'Handles' by forcing an effect
--- value.
-handles :: eff m a -> Handles eff :~: (() :: Constraint)
-handles !_ = axiom
-{-# INLINE handles #-}
-
-withHandlesImpliesPrompt
-  :: forall f eff m a r. (Handles eff, eff ~ FrameEffect f)
-  => (forall effs i effss. f ~ 'PROMPT eff effs i effss => Proxy# ('PROMPT eff effs i effss) -> r)
-  -> r
-withHandlesImpliesPrompt k =
-  ( with (axiom @f @('PROMPT eff effs i effss))
-  $ k @effs @i @effss proxy#
-  ) :: forall (effs :: [Effect]) (i :: Type) (effss :: [[Effect]]). r
-
--- -------------------------------------------------------------------------------------------------
-
-type (:<) :: Effect -> [Effect] -> Constraint
-class eff :< effs where
-  reifyIndex :: Int
-instance {-# OVERLAPPING #-} eff :< (eff ': effs) where
-  reifyIndex = 0
-  {-# INLINE reifyIndex #-}
-instance eff :< effs => eff :< (eff' ': effs) where
-  reifyIndex = reifyIndex @eff @effs + 1
-  {-# INLINE reifyIndex #-}
-
-type (:<<) :: [Effect] -> [Effect] -> Constraint
-class effs1 :<< effs2 where
-  reifySubIndex :: Int
-instance {-# OVERLAPPING #-} effs :<< effs where
-  reifySubIndex = 0
-  {-# INLINE reifySubIndex #-}
-instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
-  reifySubIndex = reifySubIndex @effs1 @effs3 + 1
-  {-# INLINE reifySubIndex #-}
-
-type (:<<:) :: [Effect] -> [Effect] -> TYPE 'IntRep
-newtype effs1 :<<: effs2 = SubIndex# Int#
-
-reifySubIndex# :: forall effs1 effs2. effs1 :<< effs2 => effs1 :<<: effs2
-reifySubIndex# = let !(I# idx) = reifySubIndex @effs1 @effs2 in SubIndex# idx
-
-reflectSubIndex# :: forall effs1 effs2 r. effs1 :<<: effs2 -> (effs1 :<< effs2 => r) -> r
-reflectSubIndex# (SubIndex# idx) = reflectDict @(effs1 :<< effs2) (I# idx)
-
-type Depth :: FramesK -> Constraint
-class Depth fs where
-  reifyDepth :: Int
-instance Depth ('ROOT s r) where
-  reifyDepth = 0
-  {-# INLINE reifyDepth #-}
-instance Depth fs => Depth (f fs) where
-  reifyDepth = reifyDepth @fs + 1
-  {-# INLINE reifyDepth #-}
-
-type (:<#) :: FrameK -> FramesK -> Constraint
-class f :<# fs where
-  reifyIndexF :: Int
-instance {-# OVERLAPPING #-} Depth (f fs) => f :<# f fs where
-  reifyIndexF = reifyDepth @(f fs) - 1
-  {-# INLINE reifyIndexF #-}
-instance f :<# fs => f :<# f' fs where
-  reifyIndexF = reifyIndexF @f @fs
-  {-# INLINE reifyIndexF #-}
-
-type (:<<#) :: FramesK -> FramesK -> Constraint
-class fs1 :<<# fs2 where
-  reifySubIndexF :: Int
-instance {-# OVERLAPPING #-} Depth fs => fs :<<# fs where
-  reifySubIndexF = reifyDepth @fs - 1
-  {-# INLINE reifySubIndexF #-}
-instance (fs2 ~ f fs3, fs1 :<<# fs3) => fs1 :<<# fs2 where
-  reifySubIndexF = reifySubIndexF @fs1 @fs3
-  {-# INLINE reifySubIndexF #-}
-
-type instance DictRep (eff :< effs) = Int
-type instance DictRep (effs1 :<< effs2) = Int
-type instance DictRep (Depth fs) = Int
-type instance DictRep (f :<# fs) = Int
-type instance DictRep (fs1 :<<# fs2) = Int
-
-withWeakenSubIndex :: forall f fs1 fs2 r. f fs1 :<<# fs2 => (fs1 :<<# fs2 => r) -> r
-withWeakenSubIndex = reflectDict @(fs1 :<<# fs2) (reifySubIndexF @(f fs1) @fs2 - 1)
-{-# INLINE withWeakenSubIndex #-}
-
 -- -------------------------------------------------------------------------------------------------
 
 newtype Eff effs a = Eff
-  { unEff :: forall effss fs1
+  { unEff :: forall fs
+           . (effs ': effss) :~>> VisibleEffects fs
+          -> Context effs effss fs
+          -> ST (S fs) (Context effs effss)
+            forall effss fs1
            . (forall fs2. fs1 ^~ fs2 -> a -> Context effs effss fs2 -> ST (S fs2) (R fs2))
           -> Context effs effss fs1 -> ST (S fs1) (R fs1)
   }
@@ -297,26 +718,14 @@ newtype Eff effs a = Eff
 -- a single value of type @(effs ': effss) ':=>>' fs@) to avoid a pointer indirection when
 -- retrieving the topmost targets. It isn’t clear if this is beneficial in general, as it requires
 -- an additional argument to be passed on the stack; benchmarking the difference would be useful.
-newtype Context effs effss fs = Context#
-  (# effs :->> fs, effss :=>> fs, (effs ': effss) :~>> VisibleEffects fs, Frames# fs #)
-pattern Context :: effs :->> fs -> effss :=>> fs -> (effs ': effss) :~>> VisibleEffects fs -> Frames fs -> Context effs effss fs
-pattern Context a b c d <- Context# (# a, b, c, (BoxFrames -> d) #)
-  where Context !a !b !c (BoxFrames !d) = Context# (# a, b, c, d #)
-{-# COMPLETE Context #-}
+data Context effs effss fs
+  = Context {-# UNPACK #-} (effs :->> fs) (effss :=>> fs) {-# UNPACK #-} (Frames fs)
 
--- | A stack of metacontinuation frames. The 'Int#' field contains the logical size of the current
--- frames stack; the 'SmallMutableArray#' is usually a little larger than the logical size so we
+-- | A stack of metacontinuation frames. The 'Int' field contains the logical size of the current
+-- frames stack; the 'SmallMutableArray' is usually a little larger than the logical size so we
 -- don’t have to do so much copying. When the stack overflows, we allocate a new, larger stack and
 -- copy the old frames into the new stack (and the old stack can be deallocated by the GC).
-newtype Frames# fs = Frames# (# Int#, SmallMutableArray# (S fs) Any #)
-
--- | A boxed version of 'Frames#'. This is more convenient to work with, so we use it in places
--- where GHC can optimize away the boxing anyway.
-data Frames fs = BoxFrames (Frames# fs)
-pattern Frames :: Int -> SmallMutableArray (S fs) Any -> Frames fs
-pattern Frames a b <- BoxFrames (Frames# (# (I# -> a), (SmallMutableArray -> b) #))
-  where Frames (I# a) (SmallMutableArray b) = BoxFrames (Frames# (# a, b #))
-{-# COMPLETE Frames #-}
+data Frames fs = Frames {-# UNPACK #-} Int {-# UNPACK #-} (SmallMutableArray (S fs) Any)
 
 -- | The representation of the frame @f@ above a stack of underlying frames @fs@.
 type Frame :: FrameK -> FramesK -> Type
@@ -389,129 +798,6 @@ data effss :~>> effs where
         -> ((eff ': effs) ': effs2 ': effss) :~>> effs3
 
 -- -------------------------------------------------------------------------------------------------
--- frames
-
--- | A restricted form of 'unsafeCoerce' that only works for converting to/from 'Any'. Still just as
--- unsafe, but makes it slightly more difficult to accidentally misuse.
-pattern Any :: forall a. a -> Any
-pattern Any a <- (unsafeCoerce -> a)
-  where Any = unsafeCoerce
-{-# COMPLETE Any #-}
-
--- | Used to explicitly overwrite references to values that should not be retained by the GC.
-null# :: Any
-null# = Any ()
-
-newEmptyFrames :: ST s (Frames ('ROOT s r))
-newEmptyFrames = Frames 0 <$> newSmallArray 32 null#
-
-withDepthOf :: forall fs r. Frames fs -> (Depth fs => r) -> r
-withDepthOf (Frames len _) = reflectDict @(Depth fs) len
-
-peekFrame :: Frames (f fs) -> ST (S fs) (Frame f fs)
-peekFrame (Frames len fs) = readSmallArray fs (len - 1) <&> \(Any f) -> f
-
-lookupFrame
-  :: forall f fs2 r. (DebugCallStack, f :<# fs2)
-  => Frames fs2
-  -> (forall fs1. f fs1 :<<# fs2 => Proxy# fs1 -> Frame f fs1 -> ST (S fs2) r)
-  -> ST (S fs2) r
-lookupFrame (Frames len fs) k = do
-  { let idx = reifyIndexF @f @fs2
-  ; assertM $ idx < len
-  ; Any f <- readSmallArray fs idx
-  ; reflectDict @(f fs1 :<<# fs2) idx
-  $ k @fs1 proxy# f
-  } :: forall (fs1 :: FramesK). ST (S fs2) r
-
--- | Looks up a 'Frame' given a 'Target' into a stack of 'Frames'. The result is returned by passing
--- it to the given continuation so that the @f@ and @fs2@ variables can be bound existentially.
-indexFrame
-  :: forall eff fs1 r. DebugCallStack => eff :-> fs1 -> Frames fs1
-  -> (forall f fs2. (eff ~ FrameEffect f, f fs2 :<<# fs1)
-      => Proxy# (f fs2) -> Frame f fs2 -> ST (S fs1) r)
-  -> ST (S fs1) r
-indexFrame (Target idx) (Frames len fs) k = do
-  { assertM $ idx < len
-  ; with (axiom @eff @(FrameEffect f)) do
-  { Any f <- readSmallArray fs idx
-  ; reflectDict @(f fs2 :<<# fs1) idx
-  $ k @f @fs2 proxy# f
-  }} :: forall (f :: FrameK) (fs2 :: FramesK). ST (S fs1) r
-
-pushFrame :: DebugCallStack => Frame f fs -> Frames fs -> ST (S fs) (Frames (f fs))
-pushFrame f (Frames len fs1) = do
-  fs2 <- if
-    | len == sizeofSmallMutableArray fs1 -> do
-        -- out of space, resize and copy
-        fs2 <- newSmallArray (len * 2) null#
-        copySmallMutableArray fs2 0 fs1 0 len
-        pure fs2
-    | otherwise -> do
-        -- no need to resize, reuse the input array
-        assertM $ len >= 0
-        assertM $ len < sizeofSmallMutableArray fs1
-        pure fs1
-  assertM $ len + 1 <= sizeofSmallMutableArray fs2
-  writeSmallArray fs2 len (Any f)
-  pure $ Frames (len + 1) fs2
-
-popFrame :: DebugCallStack => Frames (f fs) -> ST (S fs) (Frame f fs, Frames fs)
-popFrame (Frames len fs) = do
-  -- Note that we never resize the frames stack when popping, only when pushing, so the size of the
-  -- frames stack will never decrease. Theoretically, if someone created a giant frames stack very
-  -- briefly, then executed a long-lived computation with a much smaller stack, this would leak
-  -- memory. However, such a usage pattern seems unlikely, so for now, we never decrease the size of
-  -- the stack.
-  Any f <- readSmallArray fs (len - 1)
-  writeSmallArray fs len null#
-  pure (f, Frames (len - 1) fs)
-
-dropFrames :: forall fs1 fs2. (DebugCallStack, fs1 :<<# fs2) => Frames fs2 -> ST (S fs2) (Frames fs1)
-dropFrames (Frames len1 fs) = with (rootsEq @fs1 @fs2) do
-  let len2 = reifySubIndexF @fs1 @fs2
-  assertM $ len2 <= len1
-  for_ [len2..len1-1] \idx ->
-    writeSmallArray fs idx null#
-  pure $ Frames len2 fs
-
--- -------------------------------------------------------------------------------------------------
--- targets
-
-newTarget :: forall f fs. f :<# fs => FrameEffect f :-> fs
-newTarget = Target $ reifyIndexF @f @fs
-
-noTargets :: '[] :->> fs
-noTargets = Targets mempty
-
-weakenTargets :: fs1 :<<# fs2 => effs :->> fs1 -> effs :->> fs2
-weakenTargets (Targets ts) = Targets ts
-
-lookupTarget :: forall eff effs fs. (DebugCallStack, eff :< effs) => effs :->> fs -> eff :-> fs
-lookupTarget (Targets ts) = Target $ indexPrimArray ts (reifyIndex @eff @effs)
-
-pushTarget :: eff :-> fs -> effs :->> fs -> (eff ': effs) :->> fs
-pushTarget (Target t) (Targets ts1) = Targets $ runPrimArray do
-  let len = sizeofPrimArray ts1
-  ts2 <- newPrimArray (len + 1)
-  writePrimArray ts2 0 t
-  copyPrimArray ts2 1 ts1 0 len
-  pure ts2
-
--- | A convenience operation for the common case of pushing a new target that maps an effect to a
--- newly-introduced frame.
-pushNewTarget :: forall f effs fs. Depth fs => effs :->> fs -> (FrameEffect f ': effs) :->> f fs
-pushNewTarget = pushTarget (newTarget @f) . weakenTargets
-
-dropTargets
-  :: forall effs1 effs2 fs. (DebugCallStack, effs1 :<< effs2)
-  => effs2 :->> fs -> effs1 :->> fs
-dropTargets (Targets ts) =
-  let idx = reifySubIndex @effs1 @effs2
-      len = sizeofPrimArray ts - idx
-  in Targets $ clonePrimArray ts idx len
-
--- -------------------------------------------------------------------------------------------------
 -- remappings
 
 popRemapping :: (effs1 ': effs2 ': effss) :~>> effs3 -> (effs2 ': effss) :~>> effs3
@@ -538,156 +824,6 @@ replayRemappings (LiftH (idx :: RelativeHandling eff effs2 i effs3) trs) ts1 fs 
     withHandling @eff @effs3 ts2 \(_ :: Proxy# effss2) ->
     lookupFrame @('PROMPT eff effs2 i effss2) fs \_ p ->
       pure $! PushTargets (weakenTargets $ pTargets p) tss
-
--- -------------------------------------------------------------------------------------------------
--- core Eff operations
-
-instance Functor (Eff effs) where
-  fmap f (Eff m) = Eff \k -> m \tops a -> k tops (f a)
-  {-# INLINE fmap #-}
-
-instance Applicative (Eff effs) where
-  pure a = Eff \k -> k topsRefl a
-  {-# INLINE pure #-}
-  (<*>) = ap
-  {-# INLINE (<*>) #-}
-
-instance Monad (Eff effs) where
-  Eff m >>= f = Eff \k -> m \tops1 a -> unEff (f a) \tops2 -> k (topsTrans tops1 tops2)
-  {-# INLINE (>>=) #-}
-
-run :: Eff '[] a -> a
-run (Eff m) = runST do
-  fs <- newEmptyFrames
-  m (\Roots v _ -> pure v) (Context noTargets NoTargetss Run fs)
-
-lift :: effs1 :<< effs2 => Eff effs1 ~> Eff effs2
-lift (Eff m) = Eff \k (Context ts1 tss1 trs1 fs1) ->
-  m (\tops a (Context _ (PushTargets ts2 tss2) (popRemapping -> trs2) fs2) ->
-       k tops a (Context ts2 tss2 trs2 fs2))
-    (Context (dropTargets ts1) (PushTargets ts1 tss1) (Lift reifySubIndex# trs1) fs1)
-
--- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
--- behaviorally identical to just using 'lift', but the restricted type can produce better type
--- inference.
-lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
-lift1 = lift
-{-# INLINE lift1 #-}
-
--- -------------------------------------------------------------------------------------------------
--- Handling
-
-type Handling :: Effect -> [Effect] -> Type -> [Effect] -> Constraint
-class Handling eff effs i effs' | eff effs' -> i effs where
-  reifyHandlerIndex :: Int
-type instance DictRep (Handling eff effs i effs') = Int
-
-reflectHandling
-  :: forall eff effs1 effss i fs1 effs2 fs2 r. 'PROMPT eff effs1 i effss fs1 :<<# fs2
-  => effs2 :->> fs2
-  -- ^ A proof that this list of effects is fully handled by the current stack of frames.
-  -> (Handling eff effs1 i effs2 => r) -> r
-reflectHandling !_ =
-  reflectDict @(Handling eff effs1 i effs2) $ reifySubIndexF @('PROMPT eff effs1 i effss fs1) @fs2
-
-withHandling
-  :: forall eff effs' fs effs i r. Handling eff effs i effs'
-  => effs' :->> fs
-  -- ^ A proof that we’re in a context where the 'Handling' constraint actually applies.
-  -> (forall effss. 'PROMPT eff effs i effss :<# fs => Proxy# effss -> r)
-  -> r
-withHandling !_ k =
-  ( reflectDict @('PROMPT eff effs i effss :<# fs) (reifyHandlerIndex @eff @effs @i @effs')
-  $ k @effss proxy#
-  ) :: forall (effss :: [[Effect]]). r
-
-type Handling# :: Effect -> [Effect] -> Type -> [Effect] -> TYPE 'IntRep
-newtype Handling# eff effs i effs' = Handling# { handlerIndex# :: Int# }
-
-reifyHandling# :: forall eff effs i effs'. Handling eff effs i effs' => Handling# eff effs i effs'
-reifyHandling# = let !(I# n) = reifyHandlerIndex @eff @effs @i @effs' in Handling# n
-
-reflectHandling#
-  :: forall eff effs i effs' r. Handling# eff effs i effs' -> (Handling eff effs i effs' => r) -> r
-reflectHandling# (Handling# n) = reflectDict @(Handling eff effs i effs') (I# n)
-
--- | See 'LiftH'.
-type RelativeHandling :: Effect -> [Effect] -> Type -> [Effect] -> Type
-newtype RelativeHandling eff effs i effs' = RelativeHandling Int
-
-reifyRelativeHandling
-  :: forall eff effs2 effs1 i fs. Handling eff effs1 i effs2
-  => effs2 :->> fs -> Frames fs -> RelativeHandling eff effs1 i effs2
-reifyRelativeHandling !_ (Frames len _) =
-  RelativeHandling (len - reifyHandlerIndex @eff @effs1 @i @effs2)
-
-reflectRelativeHandling
-  :: forall eff effs2 effs1 i fs r
-   . effs2 :->> fs -> Frames fs -> RelativeHandling eff effs1 i effs2
-  -> (Handling eff effs1 i effs2 => r) -> r
-reflectRelativeHandling !_ (Frames len _) (RelativeHandling idx) =
-  reflectDict @(Handling eff effs1 i effs2) (len - idx)
-
--- -------------------------------------------------------------------------------------------------
--- Eff operations that use Handling
-
-send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
-send e = Eff \k ctx@(Context ts _ _ fs) ->
-  with (handles e) $
-  indexFrame (lookupTarget @eff ts) fs \(_ :: Proxy# (f fs)) p ->
-  withHandlesImpliesPrompt @f \(_ :: Proxy# ('PROMPT eff effs2 i effss)) ->
-  reflectHandling @eff @effs2 @effss @i @fs ts $
-    unEff (pHandler p reifyHandling# e) k ctx
-
-handle
-  :: forall eff a effs. Handles eff
-  => (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
-  -> Eff (eff ': effs) a
-  -> Eff effs a
-handle f (Eff m) = Eff \k1 (Context ts1 tss1 trs1 fs1 :: Context effs effss1 fs1) ->
-  withDepthOf fs1 do
-    let f1 :: Frame ('PROMPT eff effs a effss1) fs1
-        f1 = Prompt
-          { pCont = k1
-          , pHandler = \n e -> reflectHandling# n $ f e
-          , pTargets = ts2
-          , pTargetss = PushTargets ts1 tss1
-          , pRemappings = trs1
-          }
-
-        ts2 :: (eff ': effs) :->> 'PROMPT eff effs a effss1 fs1
-        ts2 = pushTarget (newTarget @('PROMPT eff effs a effss1)) (weakenTargets ts1)
-
-        k2 :: forall fs2. 'PROMPT eff effs a effss1 fs1 ^~ fs2
-           -> a -> Context (eff ': effs) '[] fs2 -> ST (S fs2) (R fs2)
-        k2 Prompts a (Context _ _ _ ffs3) = do
-          (f3, fs3) <- popFrame ffs3
-          let !(PushTargets ts3 tss3) = pTargetss f3
-              !trs3 = pRemappings f3
-          pCont f3 topsRefl a (Context ts3 tss3 trs3 fs3)
-
-    fs2 <- pushFrame f1 fs1
-    m k2 (Context ts2 NoTargetss Run fs2)
-
-liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
-liftH (Eff m) = Eff \k (Context ts1 tss1 trs1 fs1) ->
-  withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
-  lookupFrame @('PROMPT eff effs i effss) fs1 \_ p ->
-    let trs2 = LiftH (reifyRelativeHandling ts1 fs1) trs1
-    in m (\tops a (Context _ (PushTargets ts2 tss2) (popRemapping -> trs3) fs2) ->
-            k tops a (Context ts2 tss2 trs3 fs2))
-         (Context (weakenTargets $ pTargets p) (PushTargets ts1 tss1) trs2 fs1)
-
-abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
-abort a = Eff \_ (Context ts1 _ _ (fs1 :: Frames fs1)) ->
-  withHandling @eff @effs' ts1 \(_ :: Proxy# effss) ->
-  lookupFrame @('PROMPT eff effs i effss) fs1 \(_ :: Proxy# fs2) p ->
-  withWeakenSubIndex @('PROMPT eff effs i effss) @fs2 @fs1 $
-  with (rootsEq @fs2 @fs1) do
-    let !(PushTargets ts2 tss2) = pTargetss p
-        !trs2 = pRemappings p
-    fs2 <- dropFrames fs1
-    pCont p topsRefl a (Context ts2 tss2 trs2 fs2)
 
 -- -------------------------------------------------------------------------------------------------
 -- continuations
@@ -842,3 +978,5 @@ shift f = Eff \k1 (Context ts1 _ trs1 (fs1 :: Frames fs1)) ->
     unEff m (pCont p) (Context ts2 tss2 trs2 fs2)
 
 -- -------------------------------------------------------------------------------------------------
+
+-}

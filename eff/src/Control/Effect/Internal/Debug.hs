@@ -6,6 +6,8 @@ import Control.Exception (assert)
 
 #ifdef EFF_DEBUG
 import GHC.Stack (HasCallStack)
+#else
+import Data.Kind (Constraint)
 #endif
 
 debugEnabled :: Bool
