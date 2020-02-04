@@ -35,8 +35,8 @@ module Control.Effect
   , listen
   , censor
   , runWriter
-  -- , evalWriter
-  -- , execWriter
+  , evalWriter
+  , execWriter
 
   , NonDet(..)
   , runNonDetAll
@@ -50,11 +50,10 @@ import Control.Category ((>>>))
 import Control.Natural (type (~>))
 import Data.Bool (bool)
 import Data.Function
+import Data.IORef
 import Data.Tuple (swap)
 
 import Control.Effect.Internal
-
-import Debug.Trace
 
 data Error e :: Effect where
   Throw :: e -> Error e m a
@@ -107,11 +106,15 @@ modify f = get >>= put . f
 {-# INLINE modify #-}
 
 evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
-evalState s0 = swizzle
-  >>> handle @(State s) \case
-        Get -> liftH @(State s) getC
-        Put s -> liftH @(State s) (putC $! s)
-  >>> runCell s0
+evalState = wind . winder where
+  winder !s0 = Winder \_ ts -> do
+    ref <- newIORef s0
+    let h :: Handler (State s)
+        h = Handler \case
+          Get -> Eff \_ _ -> readIORef ref
+          Put !s -> Eff \_ _ -> writeIORef ref s
+    pure (pushTarget h ts, unwinder ref)
+  unwinder ref = Unwinder pure (pure ()) (winder <$> readIORef ref)
 
 runState :: forall s a effs. s -> Eff (State s ': effs) a -> Eff effs (s, a)
 runState s m = evalState s (curry swap <$> m <*> get)
@@ -136,16 +139,16 @@ censor :: Writer w :< effs => (w -> w) -> Eff (Writer w ': effs) a -> Eff effs a
 censor a b = send $ Censor a b
 {-# INLINE censor #-}
 
-runWriter :: forall w effs a. (Monoid w, Show w) => Eff (Writer w ': effs) a -> Eff effs (w, a)
+runWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs (w, a)
 runWriter = swizzle
   >>> handle \case
-        Tell w -> liftH @(Writer w) $ trace ("outer tell: " <> show w) $ tellS w
+        Tell w -> liftH @(Writer w) $ tellS w
         Listen m -> runListen m
         Censor f m -> runCensor f m
   >>> runState @w mempty
   where
     tellS :: State w :< effs' => w -> Eff effs' ()
-    tellS w = get >>= \ws -> trace ("tellS: " <> show ws <> " <> " <> show w) (put $! (ws <> w))
+    tellS w = get >>= \ws -> put $! (ws <> w)
 
     runListen :: forall effs1 i effs2 b. Handling (Writer w) effs1 i effs2
               => Eff (Writer w ': effs2) b -> Eff effs2 (w, b)
@@ -165,11 +168,11 @@ runWriter = swizzle
       Listen m -> runListen m
       Censor g m -> runCensor g m
 
--- evalWriter :: forall w effs. Monoid w => Eff (Writer w ': effs) ~> Eff effs
--- evalWriter = fmap snd . runWriter
---
--- execWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs w
--- execWriter = fmap fst . runWriter
+evalWriter :: forall w effs. Monoid w => Eff (Writer w ': effs) ~> Eff effs
+evalWriter = fmap snd . runWriter
+
+execWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs w
+execWriter = fmap fst . runWriter
 
 data NonDet :: Effect where
   Empty :: NonDet m a

@@ -55,7 +55,7 @@ library
   import: common
   hs-source-dirs: src
   exposed-modules:
-    -- Control.Effect
+    Control.Effect
     Control.Effect.Internal
     Control.Effect.Internal.Continuation
     Control.Effect.Internal.Debug
@@ -70,6 +70,9 @@ test-suite eff-tests
   main-is: Main.hs
   other-modules:
     Control.EffectSpec
+
+  if flag(debug)
+    ghc-options: -debug -with-rtsopts=-DS
 
   build-depends:
     , eff

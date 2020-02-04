@@ -14,6 +14,7 @@ module Control.Effect.Internal.SmallArray
   , readSmallArray
   , writeSmallArray
   , copySmallArray
+  , cloneSmallArray
   , copySmallMutableArray
   , cloneSmallMutableArray
   ) where
@@ -73,6 +74,14 @@ copySmallArray dst idx_dst src idx_src len = do
   assertM $ idx_src + len <= sizeofSmallArray src
   P.copySmallArray dst idx_dst src idx_src len
 {-# INLINE copySmallArray #-}
+
+cloneSmallArray :: DebugCallStack => SmallArray a -> Int -> Int -> SmallArray a
+cloneSmallArray src idx len =
+  assert (len >= 0) $
+  assert (idx >= 0) $
+  assert (idx + len <= sizeofSmallArray src) $
+    P.cloneSmallArray src idx len
+{-# INLINE cloneSmallArray #-}
 
 copySmallMutableArray
   :: (DebugCallStack, PrimMonad m)
