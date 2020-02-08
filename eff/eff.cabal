@@ -39,6 +39,8 @@ common common
     -- , transformers <1
     -- , transformers-base <1
     , primitive >=0.6.2 && <0.8
+    , ghc-prim
+    , containers
 
   default-language: Haskell2010
   default-extensions:
@@ -55,7 +57,7 @@ library
   import: common
   hs-source-dirs: src
   exposed-modules:
-    Control.Effect
+    -- Control.Effect
     Control.Effect.Internal
     Control.Effect.Internal.Continuation
     Control.Effect.Internal.Debug

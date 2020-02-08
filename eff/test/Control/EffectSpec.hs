@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -dsuppress-all -ddump-cmm #-}
+
 module Control.EffectSpec (spec) where
 
 import Control.Applicative
@@ -57,13 +59,13 @@ spec = do
 
   describe "NonDet" do
     describe "runNonDetAll" do
-      it "collects the results of all branches" do
-        let action :: NonDet :< effs => Eff effs (Integer, Integer)
-            action = do
-              a <- asum $ map pure [1, 2, 3]
-              b <- asum $ map pure [4, 5, 6]
-              pure (a, b)
-        run (runNonDetAll action) `shouldBe` [(a, b) | a <- [1, 2, 3], b <- [4, 5, 6]]
+      -- it "collects the results of all branches" do
+      --   let action :: NonDet :< effs => Eff effs (Integer, Integer)
+      --       action = do
+      --         a <- asum $ map pure [1, 2, 3]
+      --         b <- asum $ map pure [4, 5, 6]
+      --         pure (a, b)
+      --   run (runNonDetAll action) `shouldBe` [(a, b) | a <- [1, 2, 3], b <- [4, 5, 6]]
 
       specify "choice + catch with exit" do
         let results = run $ runError @() $ runNonDetAll do
@@ -79,15 +81,15 @@ spec = do
 
     describe "listen over (<|>)" $ do
       let go :: (NonDet :< effs, Writer (Sum Integer) :< effs) => Eff effs ((Sum Integer), Bool)
-          go = listen (add 1 $> True <|> add 2 $> False)
+          go = listen (add 1 *> (add 2 $> True <|> add 3 $> False))
             where add = tell . Sum @Integer
 
-      context "Writer has local semantics relative to Alternative" $ do
+      context "Writer is handled before Alternative" $ do
         it "returns output from each choice" $ do
           let results = run $ runNonDetAll $ runWriter @(Sum Integer) go
-          results `shouldBe` [(Sum 1, (Sum 1, True)), (Sum 2, (Sum 2, False))]
+          results `shouldBe` [(Sum 3, (Sum 3, True)), (Sum 4, (Sum 4, False))]
 
-      context "Writer has global semantics relative to Alternative" $ do
+      context "Writer is handled after Alternative" $ do
         it "returns output from each choice and sums the result" $ do
           let results = run $ runWriter @(Sum Integer) $ runNonDetAll go
-          results `shouldBe` (Sum 3, [(Sum 1, True), (Sum 2, False)])
+          results `shouldBe` (Sum 6, [(Sum 3, True), (Sum 4, False)])
