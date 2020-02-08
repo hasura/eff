@@ -26,7 +26,7 @@ flag debug
 
 common common
   ghc-options:
-    -flate-specialise
+    -fdicts-strict
     -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
 
   if flag(debug)

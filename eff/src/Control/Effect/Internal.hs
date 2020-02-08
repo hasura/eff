@@ -303,6 +303,7 @@ parameterizeVM adjust (EVM m) = EVM \rs -> do
               Return _ b -> runContinuation k2 b rs1
               Capture target2 f2 k4 -> pure $! handleCapture target2 f2 k4 k2
       in Capture target1 f1 (Continuation k3)
+{-# INLINE parameterizeVM #-}
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -367,20 +368,31 @@ lift1 = lift
 {-# INLINE lift1 #-}
 
 -- -------------------------------------------------------------------------------------------------
--- Handling
 
-data Handler eff = Handler { runHandler :: forall effs. eff (Eff effs) ~> Eff effs }
+type Handle :: Effect -> [Effect] -> Type -> [Effect] -> Type -> Type
+type role Handle nominal nominal representational nominal representational
+newtype Handle eff effs i effs' a = Handle# { runHandle# :: Registers# -> Eff effs' a }
+pattern Handle :: (Registers -> Eff effs' a) -> Handle eff effs i effs' a
+pattern Handle{runHandle} <- Handle# ((\f (BoxRegisters rs) -> f rs) -> runHandle)
+  where Handle f = Handle# \rs -> f (BoxRegisters rs)
+{-# COMPLETE Handle #-}
 
-type Handling :: Effect -> [Effect] -> Type -> [Effect] -> Constraint
-class Handling eff effs i effs' | eff effs' -> i effs where
-  reifyHandlerContext :: HandlerContext
-type instance DictRep (Handling _ _ _ _) = HandlerContext
+instance Functor (Handle eff effs i effs') where
+  fmap f m = m >>= pure . f
+  {-# INLINE fmap #-}
 
-data HandlerContext
-  -- The Targets field needs to be lazy, as it involves a small bit of knot-tying: the Handler
-  -- closure stored in the Targets references the HandlerContext, and the simplest place to break
-  -- the cycle is here.
-  = HandlerContext PromptId ~Targets
+instance Applicative (Handle eff effs i effs') where
+  pure a = Handle# \_ -> pure a
+  {-# INLINE pure #-}
+  (<*>) = ap
+  {-# INLINE (<*>) #-}
+
+instance Monad (Handle eff effs i effs') where
+  Handle# m >>= f = Handle# \rs -> m rs >>= \a -> runHandle# (f a) rs
+  {-# INLINE (>>=) #-}
+
+newtype Handler eff
+  = Handler { runHandler :: forall effs. eff :< effs => eff (Eff effs) ~> Eff effs }
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -389,7 +401,7 @@ send e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e
 
 handle
   :: forall eff a effs
-   . (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
+   . (forall effs'. eff :< effs' => eff (Eff effs') ~> Handle eff effs a effs')
   -> Eff (eff ': effs) a
   -> Eff effs a
 handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
@@ -403,10 +415,10 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
 
     pushPrompt (Registers pid1 ts1) =
       let pid2 = PromptId (unPromptId pid1 + 1)
-          hf :: forall effs'. eff (Eff effs') ~> Eff effs'
-          hf = reflectDict @(Handling eff effs a effs') (HandlerContext pid2 ts2) f
-          ts2 = pushTarget (Handler hf) ts1
-      in Registers pid2 ts2
+          h = Handler \e -> runHandle (f e) rs2
+          ts2 = pushTarget h ts1
+          rs2 = Registers pid2 ts2
+      in rs2
 
     -- Note: we have to be careful to push the catch frame /before/ pushing the reset frame, since
     -- we don’t want the abort handler in the captured continuation.
@@ -440,21 +452,19 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
               Capture target g k4 -> pure $! handleCaptureElsewhere target g k4 k2
       in Capture target1 f1 (Continuation k3)
 
-liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
-liftH (Eff# m) = Eff# (parameterizeVM (\(Registers pid _) -> Registers pid ts) m) where
-  HandlerContext _ ts = reifyHandlerContext @eff @effs @i @effs'
+locally :: Eff effs' ~> Handle eff effs i effs'
+locally m = Handle \_ -> m
 
-abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
-abort a = Eff \_ -> do
-  let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
-  IO.throwIO $! AbortException target (Any a)
+liftH :: Eff (eff ': effs) ~> Handle eff effs i effs'
+liftH (Eff# m) = Handle \(Registers _ ts) ->
+  Eff# (parameterizeVM (\(Registers pid _) -> Registers pid ts) m)
 
-shift
-  :: forall eff effs i effs' a. Handling eff effs i effs'
-  => ((a -> Eff effs i) -> Eff effs i) -> Eff effs' a
-shift f = Eff \_ -> do
-  let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
-  shiftVM \k1 -> pure $! Capture target (\k2 -> unEff# (f (Eff# . k2))) k1
+abort :: i -> Handle eff effs i effs' a
+abort a = Handle \(Registers pid _) -> Eff \_ -> IO.throwIO $! AbortException pid (Any a)
+
+shift :: ((a -> Eff effs i) -> Eff effs i) -> Handle eff effs i effs' a
+shift f = Handle \(Registers pid _) -> Eff \_ ->
+  shiftVM \k1 -> pure $! Capture pid (\k2 -> unEff# (f (Eff# . k2))) k1
 
 -- -------------------------------------------------------------------------------------------------
 

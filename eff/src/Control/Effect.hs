@@ -67,8 +67,8 @@ catch a b = send $ Catch a b
 
 runError :: forall e a effs. Eff (Error e ': effs) a -> Eff effs (Either e a)
 runError m = (Right <$> m) & handle \case
-  Throw e -> abort @(Error e) $ Left e
-  Catch m' f -> either f pure =<< runError m'
+  Throw e -> abort $ Left e
+  Catch m' f -> locally (either f pure =<< runError m')
 
 data Reader r :: Effect where
   Ask :: Reader r m r
@@ -85,7 +85,7 @@ local a b = send $ Local a b
 runReader :: r -> Eff (Reader r ': effs) ~> Eff effs
 runReader r = handle \case
   Ask -> pure r
-  Local f m -> let !r' = f r in runReader r' m
+  Local f m -> locally let !r' = f r in runReader r' m
 
 get :: State s :< effs => Eff effs s
 get = send Get
@@ -125,31 +125,29 @@ censor a b = send $ Censor a b
 runWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs (w, a)
 runWriter = swizzle
   >>> handle \case
-        Tell w -> liftH @(Writer w) $ tellS w
-        Listen m -> runListen m
-        Censor f m -> runCensor f m
+        Tell w -> liftH $ tellS w
+        Listen m -> locally $ runListen m
+        Censor f m -> locally $ runCensor f m
   >>> runState @w mempty
   where
     tellS :: State w :< effs' => w -> Eff effs' ()
     tellS w = get >>= \ws -> put $! (ws <> w)
 
-    runListen :: forall effs1 i effs2 b. Handling (Writer w) effs1 i effs2
-              => Eff (Writer w ': effs2) b -> Eff effs2 (w, b)
+    runListen :: forall effs' b. Writer w :< effs' => Eff (Writer w ': effs') b -> Eff effs' (w, b)
     runListen = swizzle
       >>> handle @(Writer w) \case
-            Tell w -> liftH @(Writer w) do
+            Tell w -> liftH do
               tellS w
-              lift @effs2 $ liftH @(Writer w) $ tell w
-            Listen m -> runListen m
-            Censor f m -> runCensor f m
+              lift1 $ tell w
+            Listen m -> locally $ runListen m
+            Censor f m -> locally $ runCensor f m
       >>> runState @w mempty
 
-    runCensor :: forall effs1 i effs2. Handling (Writer w) effs1 i effs2
-              => (w -> w) -> Eff (Writer w ': effs2) ~> Eff effs2
+    runCensor :: forall effs'. Writer w :< effs' => (w -> w) -> Eff (Writer w ': effs') ~> Eff effs'
     runCensor f = handle @(Writer w) \case
-      Tell w -> liftH @(Writer w) $ lift1 $ liftH @(Writer w) (tell $! f w)
-      Listen m -> runListen m
-      Censor g m -> runCensor g m
+      Tell w -> liftH $ lift1 (tell $! f w)
+      Listen m -> locally $ runListen m
+      Censor g m -> locally $ runCensor g m
 
 evalWriter :: forall w effs. Monoid w => Eff (Writer w ': effs) ~> Eff effs
 evalWriter = fmap snd . runWriter
@@ -159,5 +157,5 @@ execWriter = fmap fst . runWriter
 
 runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
 runNonDetAll m = (pure <$> m) & handle \case
-  Empty -> abort @NonDet empty
-  Choose -> shift @NonDet \k -> liftA2 (<|>) (k True) (k False)
+  Empty -> abort empty
+  Choose -> shift \k -> liftA2 (<|>) (k True) (k False)

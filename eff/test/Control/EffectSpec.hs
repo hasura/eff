@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -dsuppress-all -ddump-cmm #-}
-
 module Control.EffectSpec (spec) where
 
 import Control.Applicative
