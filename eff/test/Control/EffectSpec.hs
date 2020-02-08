@@ -59,13 +59,13 @@ spec = do
 
   describe "NonDet" do
     describe "runNonDetAll" do
-      -- it "collects the results of all branches" do
-      --   let action :: NonDet :< effs => Eff effs (Integer, Integer)
-      --       action = do
-      --         a <- asum $ map pure [1, 2, 3]
-      --         b <- asum $ map pure [4, 5, 6]
-      --         pure (a, b)
-      --   run (runNonDetAll action) `shouldBe` [(a, b) | a <- [1, 2, 3], b <- [4, 5, 6]]
+      it "collects the results of all branches" do
+        let action :: NonDet :< effs => Eff effs (Integer, Integer)
+            action = do
+              a <- asum $ map pure [1, 2, 3]
+              b <- asum $ map pure [4, 5, 6]
+              pure (a, b)
+        run (runNonDetAll action) `shouldBe` [(a, b) | a <- [1, 2, 3], b <- [4, 5, 6]]
 
       specify "choice + catch with exit" do
         let results = run $ runError @() $ runNonDetAll do

@@ -57,7 +57,7 @@ library
   import: common
   hs-source-dirs: src
   exposed-modules:
-    -- Control.Effect
+    Control.Effect
     Control.Effect.Internal
     Control.Effect.Internal.Continuation
     Control.Effect.Internal.Debug

@@ -48,9 +48,7 @@ module Control.Effect
 import Control.Applicative
 import Control.Category ((>>>))
 import Control.Natural (type (~>))
-import Data.Bool (bool)
 import Data.Function
-import Data.IORef
 import Data.Tuple (swap)
 
 import Control.Effect.Internal
@@ -101,27 +99,10 @@ modify :: State s :< effs => (s -> s) -> Eff effs ()
 modify f = get >>= put . f
 {-# INLINE modify #-}
 
-evalState :: forall s effs. Show s => s -> Eff (State s ': effs) ~> Eff effs
-evalState = wind . winder where
-  winder !s0 = Winder \pid ts -> do
-    putStrLn $ "    State (" ++ show s0 ++ ")"
-    ref <- newIORef s0
-    let h :: Handler (State s)
-        h = Handler (\case
-          Get -> Eff \_ _ -> do
-            s <- readIORef ref
-            putStrLn $ "get: " ++ show s
-            pure s
-          Put !s -> Eff \_ _ -> do
-            putStrLn $ "put: " ++ show s
-            writeIORef ref s) pid
-    pure (pushTarget h ts, unwinder ref)
-  unwinder ref = Unwinder pure (pure ()) (winder <$> readIORef ref)
-
-runState :: forall s a effs. Show s => s -> Eff (State s ': effs) a -> Eff effs (s, a)
+runState :: forall s a effs. s -> Eff (State s ': effs) a -> Eff effs (s, a)
 runState s m = evalState s (curry swap <$> m <*> get)
 
-execState :: forall s a effs. Show s => s -> Eff (State s ': effs) a -> Eff effs s
+execState :: forall s a effs. s -> Eff (State s ': effs) a -> Eff effs s
 execState s m = evalState s (m *> get)
 
 data Writer w :: Effect where
@@ -141,7 +122,7 @@ censor :: Writer w :< effs => (w -> w) -> Eff (Writer w ': effs) a -> Eff effs a
 censor a b = send $ Censor a b
 {-# INLINE censor #-}
 
-runWriter :: forall w effs a. (Monoid w, Show w) => Eff (Writer w ': effs) a -> Eff effs (w, a)
+runWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs (w, a)
 runWriter = swizzle
   >>> handle \case
         Tell w -> liftH @(Writer w) $ tellS w
@@ -170,10 +151,10 @@ runWriter = swizzle
       Listen m -> runListen m
       Censor g m -> runCensor g m
 
-evalWriter :: forall w effs. (Monoid w, Show w) => Eff (Writer w ': effs) ~> Eff effs
+evalWriter :: forall w effs. Monoid w => Eff (Writer w ': effs) ~> Eff effs
 evalWriter = fmap snd . runWriter
 
-execWriter :: forall w effs a. (Monoid w, Show w) => Eff (Writer w ': effs) a -> Eff effs w
+execWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs w
 execWriter = fmap fst . runWriter
 
 runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
