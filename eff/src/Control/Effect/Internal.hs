@@ -393,7 +393,9 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
     handleVM :: (Registers -> IO (Result a)) -> EVM a
     handleVM m2 = EVM \rs1 -> do
       let !rs2@(Registers pid _) = pushPrompt rs1
-      handleResult rs1 pid =<< resetVM (m2 rs2)
+      resetVM (m2 rs2) >>= handleCaptureHere rs1 pid >>= \case
+        Return _ a -> pure (rs1, a)
+        Capture target g k1 -> shiftVM \k2 -> pure $! handleCaptureElsewhere target g k1 k2
 
     pushPrompt (Registers pid1 ts1) =
       let pid2 = PromptId (unPromptId pid1 + 1)
@@ -402,82 +404,30 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
           ts2 = pushTarget (Handler hf) ts1
       in Registers pid2 ts2
 
-    -- Result handler for when the enclosing continuation is on the stack.
-    handleResult rs pid = \case
-      Return _ a -> pure (rs, a)
-      Capture target g k1
-        | unPromptId target == unPromptId pid -> unEVM (handleCaptureHere g k1) rs
-        | otherwise -> shiftVM \k2 -> pure $! handleCapture target g k1 k2
+    handleCaptureHere rs pid = \case
+      Capture target (g :: (b -> EVM c) -> EVM c) k1
+        | unPromptId target == unPromptId pid ->
+            -- We’re capturing up to this prompt, so the metacontinuation’s result type must be this
+            -- function’s result type. (The thing that (indirectly) enforces this is the `Handling`
+            -- constraint on `shift`.)
+            with (axiom @a @c) do
+              uncurry Return <$> unEVM (g (handleVM . runContinuation k1)) rs
+      result -> pure result
 
-    -- Result handler for when the enclosing continuation is captured.
-    handleResultWith
-      :: Registers
-      -> PromptId
-      -> Continuation a b
-      -> Result a
-      -> IO (Result b)
-    handleResultWith rs1 pid k2 = \case
-      Return _ a -> runContinuation k2 a rs1
-      Capture target g k1
-        | unPromptId target == unPromptId pid -> do
-            (rs2, a) <- unEVM (handleCaptureHere g k1) rs1
-            runContinuation k2 a rs2
-        | otherwise -> pure $! handleCapture target g k1 k2
-
-    handleCaptureHere :: forall b c. ((b -> EVM c) -> EVM c) -> Continuation b a -> EVM a
-    handleCaptureHere g k1 = with (axiom @a @c) $ g (handleVM . runContinuation k1)
-
-    handleCapture
+    handleCaptureElsewhere
       :: PromptId
       -> ((b -> EVM d) -> EVM d)
       -> Continuation b a
       -> Continuation a c
       -> Result c
-    handleCapture target1 f1 k1 k2 =
+    handleCaptureElsewhere target1 f1 k1 k2 =
       let k3 a rs1 = do
             let !rs2@(Registers pid _) = pushPrompt rs1
-            handleResultWith rs1 pid k2 =<< resetVM (runContinuation k1 a rs2)
+            resetVM (runContinuation k1 a rs2) >>= handleCaptureHere rs1 pid >>= \case
+              Return _ b -> runContinuation k2 b rs1
+              Capture target g k4 -> pure $! handleCaptureElsewhere target g k4 k2
       in Capture target1 f1 (Continuation k3)
 
--- handle
---   :: forall eff a effs
---    . (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
---   -> Eff (eff ': effs) a
---   -> Eff effs a
--- handle f (Eff m) = Eff \rs1 -> do
---   (rs2, a) <- IO.reset (m $! updateRegisters rs1)
---   unEVM (r_underflow rs2 a) rs2
---   where
---     updateRegisters !rs1 =
---       let pid = PromptId (unPromptId (r_prompt rs1) + 1)
---           hf :: forall effs'. eff (Eff effs') ~> Eff effs'
---           hf = reflectDict @(Handling eff effs a effs') (HandlerContext pid ts) f
---           ts = pushTarget (Handler hf) (r_targets rs1)
---       in rs1
---         { r_targets = ts
---         , r_underflow = underflowRestoreTargets rs1 -- FIXME: `dropTargets 1`
---         , r_shift = \target k1 f1 -> EVM \rs2 -> IO.shift \k2 -> do
---             let k3 a = EVM \rs3 -> do
---                   (rs4, b) <- unEVM (k1 a) rs3
---                   let !rs5 = updateRegisters rs4
---                   IO.applyContinuation k2 (pure (rs5, b))
---             if unPromptId target == unPromptId pid
---               then unEVM (f1 k3) rs2
---               else do
---                 let f2 k4 = EVM \rs3 -> do
---                       unEVM
---                 unEVM (r_shift rs1 target pure _) rs2
---
---         }
-
--- wind winder where
---   winder = Winder \pid ts1 -> do
---     let h :: forall effs'. eff (Eff effs') ~> Eff effs'
---         h = reflectDict @(Handling eff effs a effs') (HandlerContext pid ts2) f
---         ts2 = pushTarget (Handler h pid) ts1
---     pure (ts2, unwinder)
---   unwinder = Unwinder pure (pure ()) (pure winder)
---
 -- liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
 -- liftH (Eff m) = Eff \pid _ -> do
 --   let !(HandlerContext _ ts) = reifyHandlerContext @eff @effs @i @effs'
@@ -497,138 +447,37 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
 --     let k a = Eff \_ _ -> IO.applyContinuation k# (pure a)
 --     pure $! Capture target k f
 
-
-
-
-
-
-
-
-
-
-
-{-
-
-pattern Eff :: (PromptId -> Targets effs -> IO a) -> Eff effs a
-pattern Eff { unEff } <- Eff# ((\f pid (Targets (SmallArray ts)) -> f pid ts) -> unEff)
-  where Eff f = Eff# \pid ts -> f pid (Targets (SmallArray ts))
-{-# COMPLETE Eff #-}
-
-newtype PromptId = PromptId# Int#
-pattern PromptId :: Int -> PromptId
-pattern PromptId{ unPromptId } <- PromptId# (I# -> unPromptId)
-  where PromptId (I# n) = PromptId# n
-{-# COMPLETE PromptId #-}
-
-newtype Winder effs1 effs2 a b = Winder
-  { winder :: PromptId -> Targets effs1 -> IO (Targets effs2, Unwinder effs1 effs2 a b) }
-
-data Unwinder effs1 effs2 a b = Unwinder
-  { returnUnwinder :: a -> IO b
-  , abortUnwinder :: IO ()
-  -- ^ Called when this prompt is unwound due to an abort to an /enclosing/ prompt. The prompt that
-  -- is aborted to has its 'returnUnwinder' handler called, __/not/__ its 'abortUnwinder' handler!
-  , captureUnwinder :: IO (Winder effs1 effs2 a b) }
-
-data Request effs1 a
-  = Return ~a
-  | forall b effs2 c. Capture
-      PromptId
-      -- ^ The prompt we’re capturing up to.
-      (b -> Eff effs1 (Request effs1 a))
-      -- ^ The continuation up to this prompt.
-      ((b -> Eff effs2 c) -> Eff effs2 c)
-      -- ^ The metacontinuation.
--- TODO: Make continuation primops levity-polymorphic so we can use an unboxed sum type for Request.
-
--- | The primitive way to push a prompt.
---
--- TODO: Ensure the recursive definition of rewind doesn’t defeat important optimizations.
--- Specifically, it’s worth ensuring that simple handlers never actually allocate any Unwinder
--- closures at all and the recursive call to wind is just a jump to a known function.
-wind :: forall effs1 effs2 a b. Winder effs1 effs2 a b -> Eff effs2 a -> Eff effs1 b
-wind winder = rewind winder . fmap Return
-
-rewind :: forall effs1 effs2 a b. Winder effs1 effs2 a b -> Eff effs2 (Request effs2 a) -> Eff effs1 b
-rewind Winder{ winder } (Eff m) = Eff \pid1 ts1 -> do
-  -- Start by applying the winder.
-  let pid2 = PromptId (unPromptId pid1 + 1)
-  putStrLn $ "wind[" ++ show (unPromptId pid1) ++ " -> " ++ show (unPromptId pid2) ++ "]"
-  (ts2, Unwinder{ returnUnwinder, abortUnwinder, captureUnwinder }) <- winder pid2 ts1
-  -- Push a new prompt frame and invoke the delimited computation.
-  request <- IO.reset (m pid2 ts2) `IO.catch` \exn@(AbortException target (Any a)) ->
-    if unPromptId target == unPromptId pid2
-      -- The computation was aborted to this prompt; treat it like a normal return.
-      then pure $! Return a
-      -- The computation was aborted to an enclosing prompt; call the abort unwinder and re-raise
-      -- the exception.
-      else abortUnwinder *> IO.throwIO exn
-  case request of
-    -- Normal return; call the unwinder and return the result.
-    Return a -> do
-      putStrLn $ "return[" ++ show (unPromptId pid2) ++ " -> " ++ show (unPromptId pid1) ++ "]"
-      returnUnwinder a
-    -- Someone called shift, so we’re capturing the continuation.
-    Capture target k1 (f :: (c -> Eff effs3 d) -> Eff effs3 d) -> do
-      putStrLn $ "capture[" ++ show (unPromptId pid2) ++ " -> " ++ show (unPromptId pid1) ++ "]"
-      -- Start by calling the capture unwinder.
-      rewinder <- captureUnwinder
-      -- Compose the continuation with the rewinder.
-      let !k2 = rewind rewinder . k1
-      if unPromptId target == unPromptId pid2
-        -- We’re capturing up to this prompt, so we’re done unwinding; invoke the
-        -- metacontinuation.
-        then with (axiom @effs1 @effs3) $ with (axiom @b @d) $ unEff (f k2) pid1 ts1
-        -- We’re capturing up to a parent prompt, so capture the next continuation slice.
-        else IO.shift \k# -> do
-          -- Extend the continuation up to this prompt by composing it with the continuation up to
-          -- the next prompt.
-          let k3 b = Eff \pid3 ts3 -> IO.applyContinuation k# $ unEff (k2 b) pid3 ts3
-          pure $! Capture target k3 f
-
-
 -- -------------------------------------------------------------------------------------------------
--- targets
 
--- -------------------------------------------------------------------------------------------------
--- core Eff operations
-
--- -------------------------------------------------------------------------------------------------
--- Eff operations that use Handling
-
--- -------------------------------------------------------------------------------------------------
--- Eff operations that use Handling
-
+-- TODO: Fuse uses of swizzleTargets using RULES.
 class Swizzle effs1 effs2 where
-  swizzleTargets :: Targets effs2 -> Targets effs1
+  swizzleTargets :: Targets -> Targets
 instance {-# INCOHERENT #-} effs1 :<< effs2 => Swizzle effs1 effs2 where
-  swizzleTargets = dropTargets
+  swizzleTargets = dropTargets (reifySubIndex @effs1 @effs2)
   {-# INLINE swizzleTargets #-}
 instance Swizzle '[] effs where
   swizzleTargets _ = noTargets
   {-# INLINE swizzleTargets #-}
 instance (eff :< effs2, Swizzle effs1 effs2) => Swizzle (eff ': effs1) effs2 where
-  swizzleTargets ts = pushTarget (lookupTarget @eff ts) $! swizzleTargets @effs1 ts
+  swizzleTargets ts = pushTarget (lookupTarget @effs2 @eff ts) $! swizzleTargets @effs1 @effs2 ts
 
--- | A magician hands you a deck of cards.
---
--- “Take some cards off the top,” she tells you, “then put them back in any order you like.”
---
--- That’s what 'swizzle' does. If you picture the list of effects @effs@ like a deck of cards,
--- 'swizzle' allows you to rearrange it arbitrarily, so long as all the cards you started with are
--- still /somewhere/ in the deck when you’re finished. In fact, 'swizzle' is even more powerful than
--- that, as you may also add entirely new cards into the deck, as many as you please! You just can’t
--- take any cards out.
---
--- As it happens, the metaphor is apt for more reason than one, because 'swizzle' is slightly
--- magical. Under the hood, it tries its absolute best to figure out what you mean. Usually it does
--- a pretty good job, but sometimes it doesn’t get it quite right, and you may receive a rather
--- mystifying type error. In that case, fear not: all you need to do is offer it a little help by
--- adding some type annotations (or using @TypeApplications@).
-swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
-swizzle = wind winder where
-  winder = Winder \_ ts -> pure (swizzleTargets @effs1 @effs2 ts, unwinder)
-  unwinder = Unwinder pure (pure ()) (pure winder)
-{-# INLINE swizzle #-}
-
--}
+-- -- | A magician hands you a deck of cards.
+-- --
+-- -- “Take some cards off the top,” she tells you, “then put them back in any order you like.”
+-- --
+-- -- That’s what 'swizzle' does. If you picture the list of effects @effs@ like a deck of cards,
+-- -- 'swizzle' allows you to rearrange it arbitrarily, so long as all the cards you started with are
+-- -- still /somewhere/ in the deck when you’re finished. In fact, 'swizzle' is even more powerful than
+-- -- that, as you may also add entirely new cards into the deck, as many as you please! You just can’t
+-- -- take any cards out.
+-- --
+-- -- As it happens, the metaphor is apt for more reason than one, because 'swizzle' is slightly
+-- -- magical. Under the hood, it tries its absolute best to figure out what you mean. Usually it does
+-- -- a pretty good job, but sometimes it doesn’t get it quite right, and you may receive a rather
+-- -- mystifying type error. In that case, fear not: all you need to do is offer it a little help by
+-- -- adding some type annotations (or using @TypeApplications@).
+-- swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
+-- swizzle = wind winder where
+--   winder = Winder \_ ts -> pure (swizzleTargets @effs1 @effs2 ts, unwinder)
+--   unwinder = Unwinder pure (pure ()) (pure winder)
+-- {-# INLINE swizzle #-}
