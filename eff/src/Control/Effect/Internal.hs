@@ -394,7 +394,7 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
     handleVM :: (Registers -> IO (Result a)) -> EVM a
     handleVM m2 = EVM \rs1 -> do
       let !rs2@(Registers pid _) = pushPrompt rs1
-      resetVM (m2 rs2) >>= handleCaptureHere rs1 pid >>= \case
+      resetPrompt rs1 pid (m2 rs2) >>= \case
         Return _ a -> pure (rs1, a)
         Capture target g k1 -> shiftVM \k2 -> pure $! handleCaptureElsewhere target g k1 k2
 
@@ -405,15 +405,23 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
           ts2 = pushTarget (Handler hf) ts1
       in Registers pid2 ts2
 
-    handleCaptureHere rs pid = \case
-      Capture target (g :: (b -> EVM c) -> EVM c) k1
-        | unPromptId target == unPromptId pid ->
-            -- We’re capturing up to this prompt, so the metacontinuation’s result type must be this
-            -- function’s result type. (The thing that (indirectly) enforces this is the `Handling`
-            -- constraint on `shift`.)
-            with (axiom @a @c) do
-              uncurry Return <$> unEVM (g (handleVM . runContinuation k1)) rs
-      result -> pure result
+    -- Note: we have to be careful to push the catch frame /before/ pushing the reset frame, since
+    -- we don’t want the abort handler in the captured continuation.
+    resetPrompt rs pid m = handleCaptureHere =<< handleAbort (resetVM m) where
+      handleAbort = flip IO.catch \exn@(AbortException target (Any a)) ->
+        if unPromptId target == unPromptId pid
+          then pure $! Return rs a
+          else IO.throwIO exn
+
+      handleCaptureHere = \case
+        Capture target (g :: (b -> EVM c) -> EVM c) k1
+          | unPromptId target == unPromptId pid ->
+              -- We’re capturing up to this prompt, so the metacontinuation’s result type must be
+              -- this function’s result type. (The thing that (indirectly) enforces this is the
+              -- `Handling` constraint on `shift`.)
+              with (axiom @a @c) do
+                uncurry Return <$> unEVM (g (handleVM . runContinuation k1)) rs
+        result -> pure result
 
     handleCaptureElsewhere
       :: PromptId
@@ -424,7 +432,7 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
     handleCaptureElsewhere target1 f1 k1 k2 =
       let k3 a rs1 = do
             let !rs2@(Registers pid _) = pushPrompt rs1
-            resetVM (runContinuation k1 a rs2) >>= handleCaptureHere rs1 pid >>= \case
+            resetPrompt rs1 pid (runContinuation k1 a rs2) >>= \case
               Return _ b -> runContinuation k2 b rs1
               Capture target g k4 -> pure $! handleCaptureElsewhere target g k4 k2
       in Capture target1 f1 (Continuation k3)
@@ -433,10 +441,10 @@ liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs)
 liftH (Eff# m) = Eff# (parameterizeVM (\(Registers pid _) -> Registers pid ts) m) where
   HandlerContext _ ts = reifyHandlerContext @eff @effs @i @effs'
 
--- abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
--- abort a = Eff \_ _ -> do
---   let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
---   IO.throwIO $! AbortException target (Any a)
+abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
+abort a = Eff \_ -> do
+  let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
+  IO.throwIO $! AbortException target (Any a)
 
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
