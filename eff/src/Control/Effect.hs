@@ -1,5 +1,3 @@
-{-# LANGUAGE UndecidableInstances #-}
-
 module Control.Effect
   ( Eff
   , run
@@ -10,7 +8,10 @@ module Control.Effect
   , send
 
   , handle
+  , liftH
   , abort
+  , shift
+  , locally
 
   , Error(..)
   , throw

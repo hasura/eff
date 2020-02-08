@@ -1,7 +1,3 @@
--- {-# OPTIONS_GHC -fno-max-relevant-binds #-}
--- {-# OPTIONS_GHC -fmax-relevant-binds=20 #-}
-{-# OPTIONS_GHC -Wno-unused-imports -Wno-redundant-constraints -Wno-unused-foralls #-}
-
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE PolyKinds #-}
@@ -12,39 +8,25 @@
 
 module Control.Effect.Internal where
 
--- import qualified Control.Effect.Internal.Continuation as IO
 import qualified Control.Exception as IO
 
 import Control.Applicative
 import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.IO.Class
-import Control.Monad.Primitive
-import Control.Monad.ST
 import Control.Natural (type (~>))
 import Data.Bool (bool)
-import Data.Coerce
-import Data.Foldable
-import Data.Function
-import Data.Functor
 import Data.IORef
 import Data.Kind (Constraint, Type)
-import Data.Primitive.Array
 import Data.Type.Equality ((:~:)(..))
-import Data.Void
-import GHC.Exts (Any, Continuation#, Int(..), Int#, Proxy#, RealWorld, RuntimeRep(..), SmallArray#, State#, TYPE, Void#, (+#), proxy#, runRW#, void#, reset#, shift#, applyContinuation#)
-import GHC.Magic (noinline)
-import GHC.TypeLits (ErrorMessage(..), Nat, TypeError)
+import GHC.Exts (Any, Int(..), Int#, Proxy#, RealWorld, SmallArray#, State#, TYPE, proxy#, reset#, shift#, applyContinuation#)
 import GHC.Types (IO(..))
 import System.IO.Unsafe (unsafeDupablePerformIO)
 import Unsafe.Coerce (unsafeCoerce)
 
 import Control.Effect.Internal.Debug
 import Control.Effect.Internal.Equality
-import Control.Effect.Internal.PrimArray
 import Control.Effect.Internal.SmallArray
-
-import Debug.Trace
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -160,30 +142,9 @@ At any time, the Eff machine conceptually manages two pieces of state:
   2. The /targets vector/, which maps a list of effects to the corresponding metacontinuation frames
      that handle them.
 
-However, the representation of these things is somewhat contorted to optimize for the most common
-cases. For example, many Eff computations never need to capture the continuation even once, so the
-default representation of the metacontinuation stack optimizes for that scenario. If a continuation
-is captured, the representation evolves as necessary to amortize the cost of further continuation
-capture operations.
-
-The state of the Eff machine is tracked by a set of virtual /registers/:
-
-  * `targets` points to the current targets vector.
-
-  * `underflow` points to a function that is called when the current continuation returns. This is
-    initialized to simply return to the calling context that started the `Eff` computation in the
-    first place, but continuation manipulation operations may change it.
-
-  * `shift` points to a function that is called to capture the continuation up to a particular
-     prompt.
-
-  * `abort` points to a function that is called to abort to a particular prompt.
-
-The functions pointed to by the `underflow`, `capture`, and `abort` registers modify the state of
-the machine when they are called, so the registers interact in somewhat subtle ways. Applying a
-captured continuation also modifies the state of the machine, but continuations may be applied in
-an entirely different `Eff` computation than the one they were captured in, which requires delicate
-care. -}
+However, the representation of the metacontinuation stack is not explicit: it is implicitly
+encoded as stack frames on the ordinary GHC RTS stack that cooperate using a particular calling
+convention. -}
 
 type Eff :: [Effect] -> Type -> Type
 type role Eff nominal representational
@@ -432,8 +393,7 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
         Capture target (g :: (b -> EVM c) -> EVM c) k1
           | unPromptId target == unPromptId pid ->
               -- We’re capturing up to this prompt, so the metacontinuation’s result type must be
-              -- this function’s result type. (The thing that (indirectly) enforces this is the
-              -- `Handling` constraint on `shift`.)
+              -- this function’s result type.
               with (axiom @a @c) do
                 uncurry Return <$> unEVM (g (handleVM . runContinuation k1)) rs
         result -> pure result
@@ -503,7 +463,7 @@ swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
 
 data State s :: Effect where
   Get :: State s m s
-  Put :: s -> State s m ()
+  Put :: ~s -> State s m ()
 
 evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
 evalState s0 (Eff m) = Eff \rs -> do
