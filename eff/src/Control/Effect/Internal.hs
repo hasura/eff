@@ -15,26 +15,29 @@ module Control.Effect.Internal where
 -- import qualified Control.Effect.Internal.Continuation as IO
 import qualified Control.Exception as IO
 
+import Control.Applicative
 import Control.Exception (Exception)
 import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Control.Natural (type (~>))
+import Data.Bool (bool)
 import Data.Coerce
-import Data.Kind (Constraint, Type)
 import Data.Foldable
+import Data.Function
 import Data.Functor
+import Data.IORef
+import Data.Kind (Constraint, Type)
+import Data.Primitive.Array
 import Data.Type.Equality ((:~:)(..))
+import Data.Void
 import GHC.Exts (Any, Continuation#, Int(..), Int#, Proxy#, RealWorld, RuntimeRep(..), SmallArray#, State#, TYPE, Void#, (+#), proxy#, runRW#, void#, reset#, shift#, applyContinuation#)
+import GHC.Magic (noinline)
 import GHC.TypeLits (ErrorMessage(..), Nat, TypeError)
 import GHC.Types (IO(..))
-import Unsafe.Coerce (unsafeCoerce)
 import System.IO.Unsafe (unsafeDupablePerformIO)
-import Data.Void
-import Control.Monad.IO.Class
-import Data.Primitive.Array
-import Data.Function
-import GHC.Magic (noinline)
+import Unsafe.Coerce (unsafeCoerce)
 
 import Control.Effect.Internal.Debug
 import Control.Effect.Internal.Equality
@@ -485,3 +488,51 @@ instance (eff :< effs2, Swizzle effs1 effs2) => Swizzle (eff ': effs1) effs2 whe
 swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
 swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
   adjustTargets (Registers pid ts) = Registers pid (swizzleTargets @effs1 @effs2 ts)
+
+-- -------------------------------------------------------------------------------------------------
+
+data State s :: Effect where
+  Get :: State s m s
+  Put :: s -> State s m ()
+
+evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
+evalState s0 (Eff m) = Eff \rs -> do
+  ref <- newIORef s0
+  resetVM (uncurry Return <$> m (pushHandler ref rs)) >>= \case
+    Return _ a -> pure (rs, a)
+    Capture target f k1 -> shiftVM \k2 -> handleCapture ref target f k1 k2
+  where
+    pushHandler ref (Registers pid ts) =
+      let h :: Handler (State s)
+          h = Handler \case
+            Get -> Eff# $ liftIO $ readIORef ref
+            Put !s -> Eff# $ liftIO $ writeIORef ref s
+      in Registers pid (pushTarget h ts)
+
+    handleCapture
+      :: IORef s
+      -> PromptId
+      -> ((a -> EVM d) -> EVM d)
+      -> Continuation a b
+      -> Continuation b c
+      -> IO (Result c)
+    handleCapture ref1 target1 f1 k1 k2 = do
+      s <- readIORef ref1
+      let k3 a rs1 = do
+            ref2 <- newIORef s
+            resetVM (runContinuation k1 a (pushHandler ref2 rs1)) >>= \case
+              Return _ b -> runContinuation k2 b rs1
+              Capture target2 f2 k4 -> handleCapture ref2 target2 f2 k4 k2
+      pure $! Capture target1 f1 (Continuation k3)
+
+-- -------------------------------------------------------------------------------------------------
+
+data NonDet :: Effect where
+  Empty :: NonDet m a
+  Choose :: NonDet m Bool
+
+instance NonDet :< effs => Alternative (Eff effs) where
+  empty = send Empty
+  {-# INLINE empty #-}
+  a <|> b = send Choose >>= bool b a
+  {-# INLINE (<|>) #-}

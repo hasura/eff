@@ -89,10 +89,6 @@ runReader r = handle \case
   Ask -> pure r
   Local f m -> let !r' = f r in runReader r' m
 
-data State s :: Effect where
-  Get :: State s m s
-  Put :: s -> State s m ()
-
 get :: State s :< effs => Eff effs s
 get = send Get
 {-# INLINE get #-}
@@ -179,16 +175,6 @@ evalWriter = fmap snd . runWriter
 
 execWriter :: forall w effs a. (Monoid w, Show w) => Eff (Writer w ': effs) a -> Eff effs w
 execWriter = fmap fst . runWriter
-
-data NonDet :: Effect where
-  Empty :: NonDet m a
-  Choose :: NonDet m Bool
-
-instance NonDet :< effs => Alternative (Eff effs) where
-  empty = send Empty
-  {-# INLINE empty #-}
-  a <|> b = send Choose >>= bool b a
-  {-# INLINE (<|>) #-}
 
 runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
 runNonDetAll m = (pure <$> m) & handle \case
