@@ -210,6 +210,20 @@ pattern Registers pid ts <- BoxRegisters (Registers# (# pid, (BoxTargets -> ts) 
   where Registers pid (BoxTargets ts) = BoxRegisters (Registers# (# pid, ts #))
 {-# COMPLETE Registers #-}
 
+initialRegisters :: Registers
+initialRegisters = Registers (PromptId 0) noTargets
+
+newtype PromptId = PromptId# Int#
+pattern PromptId :: Int -> PromptId
+pattern PromptId{ unPromptId } <- PromptId# (I# -> unPromptId)
+  where PromptId (I# n) = PromptId# n
+{-# COMPLETE PromptId #-}
+
+data AbortException = AbortException PromptId ~Any
+instance Show AbortException where
+  show (AbortException _ _) = "AbortException"
+instance Exception AbortException
+
 newtype Result# a = Result#
   (# (# Registers#, a #)
    | (# PromptId, Any, Any #)
@@ -267,19 +281,25 @@ shiftVM f = IO \s1 -> case shift# f# s1 of (# s2, (# rs, a #) #) -> (# s2, (BoxR
       in case unIO (f k) s1 of (# s2, BoxResult r #) -> (# s2, r #)
 {-# INLINE shiftVM #-}
 
-initialRegisters :: Registers
-initialRegisters = Registers (PromptId 0) noTargets
-
-newtype PromptId = PromptId# Int#
-pattern PromptId :: Int -> PromptId
-pattern PromptId{ unPromptId } <- PromptId# (I# -> unPromptId)
-  where PromptId (I# n) = PromptId# n
-{-# COMPLETE PromptId #-}
-
-data AbortException = AbortException PromptId ~Any
-instance Show AbortException where
-  show (AbortException _ _) = "AbortException"
-instance Exception AbortException
+-- TODO: Share some code between `parameterizeVM` and `handle`.
+parameterizeVM :: (Registers -> Registers) -> EVM a -> EVM a
+parameterizeVM adjust (EVM m) = EVM \rs -> do
+  resetVM (uncurry Return <$> m (adjust rs)) >>= \case
+    Return _ a -> pure (rs, a)
+    Capture target f k1 -> shiftVM \k2 -> pure $! handleCapture target f k1 k2
+  where
+    handleCapture
+      :: PromptId
+      -> ((a -> EVM d) -> EVM d)
+      -> Continuation a b
+      -> Continuation b c
+      -> Result c
+    handleCapture target1 f1 k1 k2 =
+      let k3 a rs1 = do
+            resetVM (runContinuation k1 a (adjust rs1)) >>= \case
+              Return _ b -> runContinuation k2 b rs1
+              Capture target2 f2 k4 -> pure $! handleCapture target2 f2 k4 k2
+      in Capture target1 f1 (Continuation k3)
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -333,27 +353,8 @@ run :: Eff '[] a -> a
 run (Eff m) = unsafeDupablePerformIO (snd <$> m initialRegisters)
 
 lift :: forall effs1 effs2. effs1 :<< effs2 => Eff effs1 ~> Eff effs2
-lift (Eff m) = Eff \(Registers pid1 ts1) -> do
-  let !rs1 = Registers pid1 (adjustTargets ts1)
-  resetVM (uncurry Return <$> m rs1) >>= \case
-    Return (Registers pid2 _) a -> pure (Registers pid2 ts1, a)
-    Capture target f k1 -> shiftVM \k2 -> pure $! handleCapture target f k1 k2
-  where
-    adjustTargets = dropTargets (reifySubIndex @effs1 @effs2)
-
-    handleCapture
-      :: PromptId
-      -> ((a -> EVM d) -> EVM d)
-      -> Continuation a b
-      -> Continuation b c
-      -> Result c
-    handleCapture target1 f1 k1 k2 =
-      let k3 a (Registers pid1 ts1) = do
-            let !rs1 = Registers pid1 (adjustTargets ts1)
-            resetVM (runContinuation k1 a rs1) >>= \case
-              Return (Registers pid2 _) b -> runContinuation k2 b (Registers pid2 ts1)
-              Capture target2 f2 k4 -> pure $! handleCapture target2 f2 k4 k2
-      in Capture target1 f1 (Continuation k3)
+lift (Eff# m) = Eff# (parameterizeVM adjustTargets m) where
+  adjustTargets (Registers pid ts) = Registers pid (dropTargets (reifySubIndex @effs1 @effs2) ts)
 
 -- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
 -- behaviorally identical to just using 'lift', but the restricted type can produce better type
@@ -428,16 +429,15 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
               Capture target g k4 -> pure $! handleCaptureElsewhere target g k4 k2
       in Capture target1 f1 (Continuation k3)
 
--- liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
--- liftH (Eff m) = Eff \pid _ -> do
---   let !(HandlerContext _ ts) = reifyHandlerContext @eff @effs @i @effs'
---   m pid ts
---
+liftH :: forall eff effs i effs'. Handling eff effs i effs' => Eff (eff ': effs) ~> Eff effs'
+liftH (Eff# m) = Eff# (parameterizeVM (\(Registers pid _) -> Registers pid ts) m) where
+  HandlerContext _ ts = reifyHandlerContext @eff @effs @i @effs'
+
 -- abort :: forall eff effs i effs' a. Handling eff effs i effs' => i -> Eff effs' a
 -- abort a = Eff \_ _ -> do
 --   let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
 --   IO.throwIO $! AbortException target (Any a)
---
+
 -- shift
 --   :: forall eff effs i effs' a. Handling eff effs i effs'
 --   => ((a -> Eff effs i) -> Eff effs i) -> Eff effs' a
