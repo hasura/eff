@@ -446,14 +446,12 @@ abort a = Eff \_ -> do
   let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
   IO.throwIO $! AbortException target (Any a)
 
--- shift
---   :: forall eff effs i effs' a. Handling eff effs i effs'
---   => ((a -> Eff effs i) -> Eff effs i) -> Eff effs' a
--- shift f = Eff \_ _ -> do
---   let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
---   IO.shift \k# -> do
---     let k a = Eff \_ _ -> IO.applyContinuation k# (pure a)
---     pure $! Capture target k f
+shift
+  :: forall eff effs i effs' a. Handling eff effs i effs'
+  => ((a -> Eff effs i) -> Eff effs i) -> Eff effs' a
+shift f = Eff \_ -> do
+  let !(HandlerContext target _) = reifyHandlerContext @eff @effs @i @effs'
+  shiftVM \k1 -> pure $! Capture target (\k2 -> unEff# (f (Eff# . k2))) k1
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -469,23 +467,21 @@ instance Swizzle '[] effs where
 instance (eff :< effs2, Swizzle effs1 effs2) => Swizzle (eff ': effs1) effs2 where
   swizzleTargets ts = pushTarget (lookupTarget @effs2 @eff ts) $! swizzleTargets @effs1 @effs2 ts
 
--- -- | A magician hands you a deck of cards.
--- --
--- -- “Take some cards off the top,” she tells you, “then put them back in any order you like.”
--- --
--- -- That’s what 'swizzle' does. If you picture the list of effects @effs@ like a deck of cards,
--- -- 'swizzle' allows you to rearrange it arbitrarily, so long as all the cards you started with are
--- -- still /somewhere/ in the deck when you’re finished. In fact, 'swizzle' is even more powerful than
--- -- that, as you may also add entirely new cards into the deck, as many as you please! You just can’t
--- -- take any cards out.
--- --
--- -- As it happens, the metaphor is apt for more reason than one, because 'swizzle' is slightly
--- -- magical. Under the hood, it tries its absolute best to figure out what you mean. Usually it does
--- -- a pretty good job, but sometimes it doesn’t get it quite right, and you may receive a rather
--- -- mystifying type error. In that case, fear not: all you need to do is offer it a little help by
--- -- adding some type annotations (or using @TypeApplications@).
--- swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
--- swizzle = wind winder where
---   winder = Winder \_ ts -> pure (swizzleTargets @effs1 @effs2 ts, unwinder)
---   unwinder = Unwinder pure (pure ()) (pure winder)
--- {-# INLINE swizzle #-}
+-- | A magician hands you a deck of cards.
+--
+-- “Take some cards off the top,” she tells you, “then put them back in any order you like.”
+--
+-- That’s what 'swizzle' does. If you picture the list of effects @effs@ like a deck of cards,
+-- 'swizzle' allows you to rearrange it arbitrarily, so long as all the cards you started with are
+-- still /somewhere/ in the deck when you’re finished. In fact, 'swizzle' is even more powerful than
+-- that, as you may also add entirely new cards into the deck, as many as you please! You just can’t
+-- take any cards out.
+--
+-- As it happens, the metaphor is apt for more reason than one, because 'swizzle' is slightly
+-- magical. Under the hood, it tries its absolute best to figure out what you mean. Usually it does
+-- a pretty good job, but sometimes it doesn’t get it quite right, and you may receive a rather
+-- mystifying type error. In that case, fear not: all you need to do is offer it a little help by
+-- adding some type annotations (or using @TypeApplications@).
+swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
+swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
+  adjustTargets (Registers pid ts) = Registers pid (swizzleTargets @effs1 @effs2 ts)
