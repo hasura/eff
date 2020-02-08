@@ -202,11 +202,12 @@ pattern EVM{unEVM} <- EVM# ((\m (BoxRegisters rs1) -> IO \s1 -> case m rs1 s1 of
 
 -- -------------------------------------------------------------------------------------------------
 
-newtype Registers# = Registers# (# PromptId, Targets #)
+newtype Registers# = Registers# (# PromptId, Targets# #)
 
 data Registers = BoxRegisters { unboxRegisters# :: Registers# }
 pattern Registers :: PromptId -> Targets -> Registers
-pattern Registers pid ts = BoxRegisters (Registers# (# pid, ts #))
+pattern Registers pid ts <- BoxRegisters (Registers# (# pid, (BoxTargets -> ts) #))
+  where Registers pid (BoxTargets ts) = BoxRegisters (Registers# (# pid, ts #))
 {-# COMPLETE Registers #-}
 
 newtype Result# a = Result#
@@ -251,6 +252,7 @@ pattern Continuation{runContinuation} <- Continuation#
           (# s2, BoxResult r #) -> (# s2, r #)
 {-# COMPLETE Continuation #-}
 
+-- TODO: If all uses do `uncurry Return <$> m`, move it into this function.
 resetVM :: IO (Result a) -> IO (Result a)
 resetVM (IO m) = IO \s1 ->
   case reset# (\s2 -> case m s2 of (# s3, BoxResult r #) -> (# s3, r #)) s1 of
@@ -265,52 +267,8 @@ shiftVM f = IO \s1 -> case shift# f# s1 of (# s2, (# rs, a #) #) -> (# s2, (BoxR
       in case unIO (f k) s1 of (# s2, BoxResult r #) -> (# s2, r #)
 {-# INLINE shiftVM #-}
 
--- data Registers = Registers
---   { r_prompt :: PromptId
---   -- , r_stack :: {-# UNPACK #-} Stack
---   , r_targets :: {-# UNPACK #-} Targets
---   -- , r_return :: forall a. a -> EVM a
---   -- , r_shift :: forall a b
---   --            . PromptId
---   --           -> Seq Frame
---   --           -> ((a -> EVM b) -> EVM b)
---   --           -> EVM a
---   -- , r_shift :: forall a b c
---   --            . PromptId
---   --           -- ^ The prompt to capture up to.
---   --           -> (a -> EVM b)
---   --           -- ^ The continuation captured so far.
---   --           -> ((a -> EVM c) -> EVM c)
---   --           -- ^ The metacontinuation.
---   --           -> EVM b
---   -- , r_abort :: forall effs_p a b. PromptId effs_p a -> a -> Eff effs b
---   }
-
 initialRegisters :: Registers
-initialRegisters = Registers (PromptId 0) (noTargets void#)
-
--- initialRegisters :: IO Registers
--- initialRegisters = do
---   stack <- newStack
---   pure Registers
---     { r_prompt = PromptId 0
---     , r_stack = stack
---     , r_targets = noTargets
---     , r_return = \_ -> error "return: underflow"
---     , r_shift = \_ -> error "shift: no prompt"
---     }
-
--- modifyRegisters :: (Registers -> IO Registers) -> EVM ()
--- modifyRegisters f = EVM \rs1 -> do
---   !rs2 <- f rs1
---   pure (rs2, ())
-
--- underflowRestoreTargets :: Registers -> a -> EVM a
--- underflowRestoreTargets !rs1 = \a -> EVM \rs2 -> do
---   let !rs3 = rs2
---         { r_targets = r_targets rs1
---         , r_underflow = r_underflow rs1 }
---   pure (rs3, a)
+initialRegisters = Registers (PromptId 0) noTargets
 
 newtype PromptId = PromptId# Int#
 pattern PromptId :: Int -> PromptId
@@ -325,88 +283,15 @@ instance Exception AbortException
 
 -- -------------------------------------------------------------------------------------------------
 
--- data Stack = Stack {-# UNPACK #-} Int {-# UNPACK #-} (MutableArray RealWorld Any)
---
--- newStack :: IO Stack
--- newStack = Stack 0 <$> newArray 32 null#
---
--- stackAllocate :: Int -> Stack -> IO Stack
--- stackAllocate n (Stack len1 stk1) = do
---   let len2 = len1 + n
---   if len2 > sizeofMutableArray stk1
---     then do
---       stk2 <- newArray (len1 * 2) null#
---       copyMutableArray stk2 0 stk1 0 len1
---       pure $! Stack len2 stk2
---     else pure $! Stack len2 stk1
---
--- stackPush :: a -> Stack -> IO Stack
--- stackPush a (Stack len1 stk1) = do
---   Stack len2 stk2 <- stackAllocate 1 (Stack len1 stk1)
---   writeArray stk2 len1 (Any a)
---   pure $! Stack len2 stk2
---
--- stackPush2 :: a -> b -> Stack -> IO Stack
--- stackPush2 a b (Stack len1 stk1) = do
---   Stack len2 stk2 <- stackAllocate 2 (Stack len1 stk1)
---   writeArray stk2 len1 (Any a)
---   writeArray stk2 (len1 + 1) (Any b)
---   pure $! Stack len2 stk2
---
--- stackPush3 :: a -> b -> c -> Stack -> IO Stack
--- stackPush3 a b c (Stack len1 stk1) = do
---   Stack len2 stk2 <- stackAllocate 3 (Stack len1 stk1)
---   writeArray stk2 len1 (Any a)
---   writeArray stk2 (len1 + 1) (Any b)
---   writeArray stk2 (len1 + 2) (Any c)
---   pure $! Stack len2 stk2
---
--- stackDeallocate :: Int -> Stack -> IO Stack
--- stackDeallocate n (Stack len1 stk1) = do
---   assertM $ n <= len1
---   let len2 = len1 - n
---   if len2 >= 256 && len2 <= sizeofMutableArray stk1 `div` 4
---     then do
---       stk2 <- newArray (len1 `div` 2) null#
---       copyMutableArray stk2 0 stk1 0 len2
---       pure $! Stack len2 stk2
---     else do
---       for_ [len2..len1-1] \idx ->
---         writeArray stk1 idx null#
---       pure $! Stack len2 stk1
---
--- stackPop :: Stack -> IO (Stack, a)
--- stackPop (Stack len stk1) = do
---   Any a <- readArray stk1 (len - 1)
---   stk2 <- stackDeallocate 1 (Stack len stk1)
---   pure (stk2, a)
---
--- stackPop2 :: Stack -> IO (Stack, a, b)
--- stackPop2 (Stack len stk1) = do
---   Any b <- readArray stk1 (len - 1)
---   Any a <- readArray stk1 (len - 2)
---   stk2 <- stackDeallocate 2 (Stack len stk1)
---   pure (stk2, a, b)
---
--- stackPop3 :: Stack -> IO (Stack, a, b, c)
--- stackPop3 (Stack len stk1) = do
---   Any c <- readArray stk1 (len - 1)
---   Any b <- readArray stk1 (len - 2)
---   Any a <- readArray stk1 (len - 3)
---   stk2 <- stackDeallocate 3 (Stack len stk1)
---   pure (stk2, a, b, c)
---
+newtype Targets# = Targets# (SmallArray# Any)
+newtype Targets = Targets (SmallArray Any)
+pattern BoxTargets :: Targets# -> Targets
+pattern BoxTargets ts <- Targets (SmallArray (Targets# -> ts))
+  where BoxTargets (Targets# ts) = Targets (SmallArray ts)
+{-# COMPLETE BoxTargets #-}
 
--- -------------------------------------------------------------------------------------------------
-
-newtype Targets = Targets# (SmallArray# Any)
-pattern Targets :: SmallArray Any -> Targets
-pattern Targets a <- Targets# (SmallArray -> a)
-  where Targets (SmallArray a) = Targets# a
-{-# COMPLETE Targets #-}
-
-noTargets :: Void# -> Targets
-noTargets _ = Targets mempty
+noTargets :: Targets
+noTargets = Targets mempty
 
 lookupTarget :: forall effs eff. (DebugCallStack, eff :< effs) => Targets -> Handler eff
 lookupTarget (Targets ts) = case indexSmallArray ts (reifyIndex @eff @effs) of (# Any h #) -> h
@@ -442,10 +327,6 @@ instance MonadIO EVM where
   liftIO (IO m) = EVM# \rs s1 -> case m s1 of (# s2, a #) -> (# s2, rs, a #)
   {-# INLINE liftIO #-}
 
--- underflow :: a -> EVM a
--- underflow a = EVM \rs -> unEVM (r_underflow rs a) rs
--- {-# INLINE underflow #-}
-
 -- -------------------------------------------------------------------------------------------------
 
 run :: Eff '[] a -> a
@@ -469,42 +350,17 @@ lift (Eff m) = Eff \(Registers pid1 ts1) -> do
     handleCapture target1 f1 k1 k2 =
       let k3 a (Registers pid1 ts1) = do
             let !rs1 = Registers pid1 (adjustTargets ts1)
-            runContinuation k1 a rs1 >>= \case
+            resetVM (runContinuation k1 a rs1) >>= \case
               Return (Registers pid2 _) b -> runContinuation k2 b (Registers pid2 ts1)
               Capture target2 f2 k4 -> pure $! handleCapture target2 f2 k4 k2
       in Capture target1 f1 (Continuation k3)
 
--- lift :: forall effs1 effs2. effs1 :<< effs2 => Eff effs1 ~> Eff effs2
--- lift (Eff m) = Eff \rs1 -> do
---   (rs2, a) <- IO.reset (m =<< updateRegisters rs1)
---   unEVM (r_return rs2 a) rs2
---   where
---     updateRegisters rs1 = do
---       stk1 <- stackPush3 (r_targets rs1) (r_return rs1) (r_shift rs1) (r_stack rs1)
---       pure $! rs1
---         { r_stack = stk1
---         , r_targets = dropTargets (reifySubIndex @effs1 @effs2) (r_targets rs1)
---         , r_shift = \target fs1 f -> restoreRegisters *> EVM \rs2 -> IO.shift \k -> do
---             let !fs2 = fs1 |> Frame (modifyRegisters updateRegisters) k
---             unEVM (r_shift rs2 target fs2 f) rs2
---         , r_return = \a -> restoreRegisters *> pure a
---         }
---
---     restoreRegisters = modifyRegisters \rs -> do
---       (stk2, ts2, return2, shift2) <- stackPop3 (r_stack rs)
---       pure $! rs
---         { r_stack = stk2
---         , r_targets = ts2
---         , r_return = unsafeCoerce return2
---         , r_shift = unsafeCoerce shift2
---         }
-
--- -- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
--- -- behaviorally identical to just using 'lift', but the restricted type can produce better type
--- -- inference.
--- lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
--- lift1 = lift
--- {-# INLINE lift1 #-}
+-- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
+-- behaviorally identical to just using 'lift', but the restricted type can produce better type
+-- inference.
+lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
+lift1 = lift
+{-# INLINE lift1 #-}
 
 -- -------------------------------------------------------------------------------------------------
 -- Handling
@@ -524,9 +380,65 @@ data HandlerContext
 
 -- -------------------------------------------------------------------------------------------------
 
--- send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
--- send e = Eff \rs -> unEff (runHandler (lookupTarget @effs (r_targets rs)) e) rs
---
+send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
+send e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e) rs
+
+handle
+  :: forall eff a effs
+   . (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
+  -> Eff (eff ': effs) a
+  -> Eff effs a
+handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
+  where
+    handleVM :: (Registers -> IO (Result a)) -> EVM a
+    handleVM m2 = EVM \rs1 -> do
+      let !rs2@(Registers pid _) = pushPrompt rs1
+      handleResult rs1 pid =<< resetVM (m2 rs2)
+
+    pushPrompt (Registers pid1 ts1) =
+      let pid2 = PromptId (unPromptId pid1 + 1)
+          hf :: forall effs'. eff (Eff effs') ~> Eff effs'
+          hf = reflectDict @(Handling eff effs a effs') (HandlerContext pid2 ts2) f
+          ts2 = pushTarget (Handler hf) ts1
+      in Registers pid2 ts2
+
+    -- Result handler for when the enclosing continuation is on the stack.
+    handleResult rs pid = \case
+      Return _ a -> pure (rs, a)
+      Capture target g k1
+        | unPromptId target == unPromptId pid -> unEVM (handleCaptureHere g k1) rs
+        | otherwise -> shiftVM \k2 -> pure $! handleCapture target g k1 k2
+
+    -- Result handler for when the enclosing continuation is captured.
+    handleResultWith
+      :: Registers
+      -> PromptId
+      -> Continuation a b
+      -> Result a
+      -> IO (Result b)
+    handleResultWith rs1 pid k2 = \case
+      Return _ a -> runContinuation k2 a rs1
+      Capture target g k1
+        | unPromptId target == unPromptId pid -> do
+            (rs2, a) <- unEVM (handleCaptureHere g k1) rs1
+            runContinuation k2 a rs2
+        | otherwise -> pure $! handleCapture target g k1 k2
+
+    handleCaptureHere :: forall b c. ((b -> EVM c) -> EVM c) -> Continuation b a -> EVM a
+    handleCaptureHere g k1 = with (axiom @a @c) $ g (handleVM . runContinuation k1)
+
+    handleCapture
+      :: PromptId
+      -> ((b -> EVM d) -> EVM d)
+      -> Continuation b a
+      -> Continuation a c
+      -> Result c
+    handleCapture target1 f1 k1 k2 =
+      let k3 a rs1 = do
+            let !rs2@(Registers pid _) = pushPrompt rs1
+            handleResultWith rs1 pid k2 =<< resetVM (runContinuation k1 a rs2)
+      in Capture target1 f1 (Continuation k3)
+
 -- handle
 --   :: forall eff a effs
 --    . (forall effs'. Handling eff effs a effs' => eff (Eff effs') ~> Eff effs')
