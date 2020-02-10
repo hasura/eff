@@ -1,3 +1,5 @@
+{-# OPTIONS_HADDOCK not-home #-}
+
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE PolyKinds #-}
@@ -50,6 +52,7 @@ unIO (IO m) = m
 
 -- -------------------------------------------------------------------------------------------------
 
+-- | The kind of effects.
 type Effect = (Type -> Type) -> Type -> Type
 
 type (:<) :: Effect -> [Effect] -> Constraint
@@ -76,21 +79,52 @@ instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
 
 {- Note [The Eff Machine]
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-The Eff monad is best thought of as a “embedded virtual machine.” Given primitive support for
-continuation manipulation from the host, Eff efficiently implements a complement of complex control
-operations.
+The Eff monad is best thought of as a “embedded virtual machine.” Given
+primitive support for continuation manipulation from the host, Eff efficiently
+implements a complement of complex control operations.
 
 At any time, the Eff machine conceptually manages two pieces of state:
 
-  1. The /metacontinuation stack/, which holds metacontinuation frames. Metacontinuation frames
-     correspond to things like effect handlers, “thread-local” state, and dynamic winders.
+  1. The /metacontinuation stack/, which holds metacontinuation frames.
+     Metacontinuation frames correspond to things like effect handlers,
+     “thread-local” state, and dynamic winders.
 
-  2. The /targets vector/, which maps a list of effects to the corresponding metacontinuation frames
-     that handle them.
+  2. The /targets vector/, which maps a list of effects to the corresponding
+     metacontinuation frames that handle them.
 
-However, the representation of the metacontinuation stack is not explicit: it is implicitly
-encoded as stack frames on the ordinary GHC RTS stack that cooperate using a particular calling
-convention. -}
+However, the representation of the metacontinuation stack is not explicit: it is
+implicitly encoded as stack frames on the ordinary GHC RTS stack that cooperate
+using a particular calling convention.
+
+Note [Manual worker/wrapper]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+GHC performs an optimization called the /worker-wrapper transformation/, which
+is used to propagate strictness information, unboxing, and more. The idea is
+simple: if a function strictly operates on a boxed value, like
+
+  f :: Int -> Foo
+  f !n = ...
+
+then GHC will internally rewrite it into a pair of definitions, a /worker/ and a
+/wrapper/:
+
+  $wf :: Int# -> Foo
+  $wf n = ...
+
+  f :: Int -> Foo
+  f (I# n) = $wf n
+  {-# INLINE f #-}
+
+If some other code uses f, the wrapper will be inlined at the call site, and the
+exposed unfolding allows GHC to make a direct call to $wf passing an unboxed
+Int#.
+
+This is great, but the automatic transformation can only do so much. The
+worker/wrapper transformation relies on inlining, so it only works for known
+calls. This means it can be advantageous to /manually/ perform this kind of
+transformation to ensure unboxing happens, especially on datatypes (where the
+“worker” is the datatype definition itself and the “wrapper” is a pattern
+synonym.) -}
 
 type Eff :: [Effect] -> Type -> Type
 type role Eff nominal representational
@@ -293,7 +327,9 @@ send e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e
 handle
   :: forall eff a effs
    . (forall effs'. eff :< effs' => eff (Eff effs') ~> Handle eff effs a effs')
+  -- ^ The handler function.
   -> Eff (eff ': effs) a
+  -- ^ The action to handle.
   -> Eff effs a
 handle f (Eff m1) = Eff# (handleVM (fmap (Return . snd) . m1))
   where
@@ -388,6 +424,24 @@ instance (eff :< effs2, Swizzle effs1 effs2) => Swizzle (eff ': effs1) effs2 whe
 swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
 swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
   adjustTargets (Registers pid ts) = Registers pid (swizzleTargets @effs1 @effs2 ts)
+
+-- -------------------------------------------------------------------------------------------------
+
+data IOE :: Effect where
+  LiftIO :: IO a -> IOE m a
+
+unsafeIOToEff :: IO ~> Eff effs
+unsafeIOToEff = Eff# . liftIO
+{-# INLINE unsafeIOToEff #-}
+
+runIO :: Eff '[IOE] ~> IO
+runIO m0 = snd <$> unEff (handleIO m0) initialRegisters where
+  handleIO = handle \case
+    LiftIO m -> locally (unsafeIOToEff m)
+
+instance IOE :< effs => MonadIO (Eff effs) where
+  liftIO = send . LiftIO
+  {-# INLINE liftIO #-}
 
 -- -------------------------------------------------------------------------------------------------
 

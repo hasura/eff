@@ -1,18 +1,29 @@
-module Control.Effect
-  ( Eff
+module Control.Effect (
+  -- * The @Eff@ monad
+    Eff
   , run
+  , lift
+  , lift1
+  , swizzle
 
+  -- * Defining new effects
   , Effect
   , (:<)
-  , lift
   , send
 
+  -- * Handling effects
   , handle
   , liftH
   , abort
   , shift
   , locally
 
+  -- * Performing I/O
+  , IOE(..)
+  , MonadIO(..)
+  , runIO
+
+  -- * Built-in effects
   , Error(..)
   , throw
   , catch
@@ -40,14 +51,17 @@ module Control.Effect
   , execWriter
 
   , NonDet(..)
+  , Alternative(..)
   , runNonDetAll
 
-  , type (~>)
+  -- * Re-exports
   , (&)
+  , type (~>)
   ) where
 
 import Control.Applicative
 import Control.Category ((>>>))
+import Control.Monad.IO.Class
 import Control.Natural (type (~>))
 import Data.Function
 import Data.Tuple (swap)
@@ -73,13 +87,13 @@ runError m = (Right <$> m) & handle \case
 
 data Reader r :: Effect where
   Ask :: Reader r m r
-  Local :: (r -> r) -> Eff (Reader r ': effs) a -> Reader r (Eff effs) a
+  Local :: (r1 -> r2) -> Eff (Reader r2 ': effs) a -> Reader r1 (Eff effs) a
 
 ask :: Reader r :< effs => Eff effs r
 ask = send Ask
 {-# INLINE ask #-}
 
-local :: Reader r :< effs => (r -> r) -> Eff (Reader r ': effs) ~> Eff effs
+local :: Reader r1 :< effs => (r1 -> r2) -> Eff (Reader r2 ': effs) ~> Eff effs
 local a b = send $ Local a b
 {-# INLINE local #-}
 
