@@ -56,10 +56,7 @@ library
   exposed-modules:
     Control.Effect
     Control.Effect.Internal
-    Control.Effect.Internal.Continuation
     Control.Effect.Internal.Debug
-    Control.Effect.Internal.Equality
-    Control.Effect.Internal.PrimArray
     Control.Effect.Internal.SmallArray
 
 test-suite eff-tests

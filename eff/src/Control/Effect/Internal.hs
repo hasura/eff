@@ -18,69 +18,20 @@ import Control.Natural (type (~>))
 import Data.Bool (bool)
 import Data.IORef
 import Data.Kind (Constraint, Type)
-import Data.Type.Equality ((:~:)(..))
-import GHC.Exts (Any, Int(..), Int#, Proxy#, RealWorld, SmallArray#, State#, TYPE, proxy#, reset#, shift#, applyContinuation#)
+import Data.Type.Equality ((:~:)(..), gcastWith)
+import GHC.Exts (Any, Int(..), Int#, RealWorld, SmallArray#, State#, TYPE, reset#, shift#, applyContinuation#)
 import GHC.Types (IO(..))
 import System.IO.Unsafe (unsafeDupablePerformIO)
 import Unsafe.Coerce (unsafeCoerce)
 
 import Control.Effect.Internal.Debug
-import Control.Effect.Internal.Equality
 import Control.Effect.Internal.SmallArray
 
 -- -------------------------------------------------------------------------------------------------
 
-letT :: (Proxy# a -> r) -> r
-letT f = f proxy#
-{-# INLINE letT #-}
-
-type With :: TYPE rep -> Constraint
-class With a where
-  type WithC a :: Constraint
-  with :: a -> (WithC a => r) -> r
-
-instance With (a :~: b) where
-  type WithC (a :~: b) = a ~ b
-  with Refl x = x
-  {-# INLINE with #-}
-
-instance With (a ~# b) where
-  type WithC (a ~# b) = a ~ b
-  with Refl# x = x
-  {-# INLINE with #-}
-
 axiom :: a :~: b
 axiom = unsafeCoerce Refl
 {-# INLINE axiom #-}
-
-type DictRep :: Constraint -> Type
-type family DictRep c
-
-type WithDict :: Constraint -> Type -> Type
-newtype WithDict c r = WithDict { unWithDict :: c => r }
-
-reifyDict :: forall c. c => DictRep c
-reifyDict = unWithDict @c @(DictRep c) (unsafeCoerce (id @(DictRep c)))
-{-# INLINE reifyDict #-}
-
-reflectDict :: forall c r. DictRep c -> (c => r) -> r
-reflectDict !d x = unsafeCoerce (WithDict @c @r x) d
-{-# INLINE reflectDict #-}
-
-data Dict' c = c => Dict'
-
--- | Reifies a typeclass dictionary as a value. The main advantage to this is that it can be
--- UNPACKed when stored in another datatype.
-newtype Dict c = DictRep (DictRep c)
-pattern Dict :: forall c. () => c => Dict c
-pattern Dict <- DictRep ((\d -> reflectDict @c @(Dict' c) d Dict') -> Dict')
-  where Dict = DictRep (reifyDict @c)
-{-# COMPLETE Dict #-}
-
-instance With (Dict c) where
-  type WithC (Dict c) = c
-  with Dict x = x
-  {-# INLINE with #-}
 
 -- | A restricted form of 'unsafeCoerce' that only works for converting to/from 'Any'. Still just as
 -- unsafe, but makes it slightly more difficult to accidentally misuse.
@@ -98,6 +49,8 @@ unIO (IO m) = m
 {-# INLINE unIO #-}
 
 -- -------------------------------------------------------------------------------------------------
+
+type Effect = (Type -> Type) -> Type -> Type
 
 type (:<) :: Effect -> [Effect] -> Constraint
 class eff :< effs where
@@ -118,13 +71,6 @@ instance {-# OVERLAPPING #-} effs :<< effs where
 instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
   reifySubIndex = reifySubIndex @effs1 @effs3 + 1
   {-# INLINE reifySubIndex #-}
-
-type instance DictRep (eff :< effs) = Int
-type instance DictRep (effs1 :<< effs2) = Int
-
--- -------------------------------------------------------------------------------------------------
-
-type Effect = (Type -> Type) -> Type -> Type
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -167,7 +113,6 @@ pattern EVM{unEVM} <- EVM# ((\m (BoxRegisters rs1) -> IO \s1 -> case m rs1 s1 of
 -- -------------------------------------------------------------------------------------------------
 
 newtype Registers# = Registers# (# PromptId, Targets# #)
-
 data Registers = BoxRegisters { unboxRegisters# :: Registers# }
 pattern Registers :: PromptId -> Targets -> Registers
 pattern Registers pid ts <- BoxRegisters (Registers# (# pid, (BoxTargets -> ts) #))
@@ -179,7 +124,7 @@ initialRegisters = Registers (PromptId 0) noTargets
 
 newtype PromptId = PromptId# Int#
 pattern PromptId :: Int -> PromptId
-pattern PromptId{ unPromptId } <- PromptId# (I# -> unPromptId)
+pattern PromptId{unPromptId} <- PromptId# (I# -> unPromptId)
   where PromptId (I# n) = PromptId# n
 {-# COMPLETE PromptId #-}
 
@@ -188,24 +133,10 @@ instance Show AbortException where
   show (AbortException _ _) = "AbortException"
 instance Exception AbortException
 
-newtype Result# a = Result#
-  (# (# Registers#, a #)
-   | (# PromptId, Any, Any #)
-   #)
-pattern Return# :: Registers# -> a -> Result# a
-pattern Return# rs a = Result# (# (# rs, a #) | #)
-pattern Capture#
-  :: PromptId
-  -> ((b -> EVM c) -> EVM c)
-  -> Continuation b a
-  -> Result# a
-pattern Capture# pid f k = Result# (# | (# pid, Any f, Any k #) #)
-{-# COMPLETE Return#, Capture# #-}
-
+newtype Result# a = Result# (# a | (# PromptId, Any, Any #) #)
 data Result a = BoxResult (Result# a)
-pattern Return :: Registers -> a -> Result a
-pattern Return rs a <- BoxResult (Return# (BoxRegisters -> rs) a)
-  where Return (BoxRegisters rs) a = BoxResult (Return# rs a)
+pattern Return :: a -> Result a
+pattern Return a = BoxResult (Result# (# a | #))
 pattern Capture
   :: PromptId
   -- ^ The prompt to capture up to.
@@ -215,7 +146,7 @@ pattern Capture
   -> Continuation b a
   -- ^ The composed continuation captured so far.
   -> Result a
-pattern Capture pid f k = BoxResult (Capture# pid f k)
+pattern Capture pid f k = BoxResult (Result# (# | (# pid, Any f, Any k #) #))
 {-# COMPLETE Return, Capture #-}
 
 newtype Continuation a b = Continuation#
@@ -230,7 +161,6 @@ pattern Continuation{runContinuation} <- Continuation#
           (# s2, BoxResult r #) -> (# s2, r #)
 {-# COMPLETE Continuation #-}
 
--- TODO: If all uses do `uncurry Return <$> m`, move it into this function.
 resetVM :: IO (Result a) -> IO (Result a)
 resetVM (IO m) = IO \s1 ->
   case reset# (\s2 -> case m s2 of (# s3, BoxResult r #) -> (# s3, r #)) s1 of
@@ -248,8 +178,8 @@ shiftVM f = IO \s1 -> case shift# f# s1 of (# s2, (# rs, a #) #) -> (# s2, (BoxR
 -- TODO: Share some code between `parameterizeVM` and `handle`.
 parameterizeVM :: (Registers -> Registers) -> EVM a -> EVM a
 parameterizeVM adjust (EVM m) = EVM \rs -> do
-  resetVM (uncurry Return <$> m (adjust rs)) >>= \case
-    Return _ a -> pure (rs, a)
+  resetVM (Return . snd <$> m (adjust rs)) >>= \case
+    Return a -> pure (rs, a)
     Capture target f k1 -> shiftVM \k2 -> pure $! handleCapture target f k1 k2
   where
     handleCapture
@@ -261,7 +191,7 @@ parameterizeVM adjust (EVM m) = EVM \rs -> do
     handleCapture target1 f1 k1 k2 =
       let k3 a rs1 = do
             resetVM (runContinuation k1 a (adjust rs1)) >>= \case
-              Return _ b -> runContinuation k2 b rs1
+              Return b -> runContinuation k2 b rs1
               Capture target2 f2 k4 -> pure $! handleCapture target2 f2 k4 k2
       in Capture target1 f1 (Continuation k3)
 {-# INLINE parameterizeVM #-}
@@ -365,13 +295,13 @@ handle
    . (forall effs'. eff :< effs' => eff (Eff effs') ~> Handle eff effs a effs')
   -> Eff (eff ': effs) a
   -> Eff effs a
-handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
+handle f (Eff m1) = Eff# (handleVM (fmap (Return . snd) . m1))
   where
     handleVM :: (Registers -> IO (Result a)) -> EVM a
     handleVM m2 = EVM \rs1 -> do
       let !rs2@(Registers pid _) = pushPrompt rs1
       resetPrompt rs1 pid (m2 rs2) >>= \case
-        Return _ a -> pure (rs1, a)
+        Return a -> pure (rs1, a)
         Capture target g k1 -> shiftVM \k2 -> pure $! handleCaptureElsewhere target g k1 k2
 
     pushPrompt (Registers pid1 ts1) =
@@ -386,7 +316,7 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
     resetPrompt rs pid m = handleCaptureHere =<< handleAbort (resetVM m) where
       handleAbort = flip IO.catch \exn@(AbortException target (Any a)) ->
         if unPromptId target == unPromptId pid
-          then pure $! Return rs a
+          then pure $! Return a
           else IO.throwIO exn
 
       handleCaptureHere = \case
@@ -394,8 +324,8 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
           | unPromptId target == unPromptId pid ->
               -- We’re capturing up to this prompt, so the metacontinuation’s result type must be
               -- this function’s result type.
-              with (axiom @a @c) do
-                uncurry Return <$> unEVM (g (handleVM . runContinuation k1)) rs
+              gcastWith (axiom @a @c) do
+                Return . snd <$> unEVM (g (handleVM . runContinuation k1)) rs
         result -> pure result
 
     handleCaptureElsewhere
@@ -408,7 +338,7 @@ handle f (Eff m1) = Eff# (handleVM (fmap (uncurry Return) . m1))
       let k3 a rs1 = do
             let !rs2@(Registers pid _) = pushPrompt rs1
             resetPrompt rs1 pid (runContinuation k1 a rs2) >>= \case
-              Return _ b -> runContinuation k2 b rs1
+              Return b -> runContinuation k2 b rs1
               Capture target g k4 -> pure $! handleCaptureElsewhere target g k4 k2
       in Capture target1 f1 (Continuation k3)
 
@@ -468,8 +398,8 @@ data State s :: Effect where
 evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
 evalState s0 (Eff m) = Eff \rs -> do
   ref <- newIORef s0
-  resetVM (uncurry Return <$> m (pushHandler ref rs)) >>= \case
-    Return _ a -> pure (rs, a)
+  resetVM (Return . snd <$> m (pushHandler ref rs)) >>= \case
+    Return a -> pure (rs, a)
     Capture target f k1 -> shiftVM \k2 -> handleCapture ref target f k1 k2
   where
     pushHandler ref (Registers pid ts) =
@@ -491,7 +421,7 @@ evalState s0 (Eff m) = Eff \rs -> do
       let k3 a rs1 = do
             ref2 <- newIORef s
             resetVM (runContinuation k1 a (pushHandler ref2 rs1)) >>= \case
-              Return _ b -> runContinuation k2 b rs1
+              Return b -> runContinuation k2 b rs1
               Capture target2 f2 k4 -> handleCapture ref2 target2 f2 k4 k2
       pure $! Capture target1 f1 (Continuation k3)
 
