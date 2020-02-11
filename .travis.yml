@@ -1,16 +1,36 @@
-language: haskell
-cabal: '3.0'
-ghc: ['8.6', '8.8']
+language: c
+
+addons:
+  apt:
+    sources: [hvr-ghc]
+    packages: [cabal-install-3.0]
+env:
+- GHC_VERSION: 8.11.0.20200211
+  GHC_BINDIST: https://gitlab.haskell.org/lexi.lambda/ghc/raw/continuations-bindist-8.11.0.20200211-x86_64-xenial/ghc.tar.xz
 
 cache:
   directories:
+  - $HOME/.ghc/$GHC_VERSION
   - $HOME/.cabal/bin
   - $HOME/.cabal/packages
   - $HOME/.cabal/store
+
+before_install:
+- GHC_HOME=$HOME/.ghc/$GHC_VERSION
+- |
+  if [[ ! -f $GHC_HOME/bin/ghc ]]; then
+    wget "$GHC_BINDIST" && \
+    tar -xf ghc.tar.xz && \
+    pushd ghc-$GHC_VERSION-*-linux && \
+    ./configure --prefix="$GHC_HOME" && \
+    make install && \
+    popd
+  fi
+- export PATH=$HOME/.cabal/bin:/opt/cabal/bin:$GHC_HOME/bin:$PATH
 
 install:
 - cp cabal.project.travis cabal.project.local
 - cabal new-update
 - cabal new-build all --only-dependencies
 script:
-- cabal new-test all --test-show-details=always
+- cabal new-test all --test-show-details=direct
