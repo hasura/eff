@@ -16,38 +16,48 @@ source-repository head
   type: git
   location: https://github.com/hasura/eff
 
+flag debug
+  description:
+    Enables some additional internal consistency checking at the cost of a small performance
+    overhead. This may be useful if you find yourself getting segfaults or similarly dire badness,
+    but is otherwise unlikely to be helpful.
+  default: False
+  manual: True
+
 common common
   ghc-options:
-    -flate-specialise
+    -fdicts-strict
     -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
 
+  if flag(debug)
+    ghc-options: -fno-ignore-asserts -falignment-sanitisation -fcatch-bottoms
+    cpp-options: -DEFF_DEBUG
+
   build-depends:
-    , base >=4.12 && <5
-    , monad-control ^>=1
-    , transformers <1
-    , transformers-base <1
+    , base >=4.14 && <5
+    , natural-transformation ^>=0.4
+    , primitive >=0.6.2 && <0.8
+    , ghc-prim
 
   default-language: Haskell2010
   default-extensions:
-    ApplicativeDo BangPatterns ConstraintKinds DataKinds DefaultSignatures DeriveDataTypeable
-    DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies
-    DerivingVia EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances
-    FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase
-    MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedStrings PatternSynonyms
-    QuantifiedConstraints RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections
-    TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators ViewPatterns
+    ApplicativeDo BangPatterns BlockArguments ConstraintKinds DataKinds DefaultSignatures
+    DeriveDataTypeable DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable
+    DerivingStrategies DerivingVia EmptyCase ExistentialQuantification FlexibleContexts
+    FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs
+    KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedStrings
+    PatternSynonyms QuantifiedConstraints RankNTypes RoleAnnotations ScopedTypeVariables
+    StandaloneDeriving StandaloneKindSignatures TupleSections TypeApplications TypeFamilies
+    TypeFamilyDependencies TypeOperators UnliftedNewtypes ViewPatterns
 
 library
   import: common
   hs-source-dirs: src
   exposed-modules:
     Control.Effect
-    Control.Effect.Error
     Control.Effect.Internal
-    Control.Effect.Reader
-    Control.Effect.Resource
-    Control.Effect.State
-    Control.Effect.Writer
+    Control.Effect.Internal.Debug
+    Control.Effect.Internal.SmallArray
 
 test-suite eff-tests
   import: common
@@ -55,8 +65,10 @@ test-suite eff-tests
   hs-source-dirs: test
   main-is: Main.hs
   other-modules:
-    Control.Effect.Examples.FileSystemSpec
-    Control.Effect.ResourceSpec
+    Control.EffectSpec
+
+  if flag(debug)
+    ghc-options: -debug -with-rtsopts=-DS
 
   build-depends:
     , eff
