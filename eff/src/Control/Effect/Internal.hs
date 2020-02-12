@@ -29,20 +29,22 @@ import Unsafe.Coerce (unsafeCoerce)
 import Control.Effect.Internal.Debug
 import Control.Effect.Internal.SmallArray
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 axiom :: a :~: b
 axiom = unsafeCoerce Refl
 {-# INLINE axiom #-}
 
--- | A restricted form of 'unsafeCoerce' that only works for converting to/from 'Any'. Still just as
--- unsafe, but makes it slightly more difficult to accidentally misuse.
+-- | A restricted form of 'unsafeCoerce' that only works for converting to/from
+-- 'Any'. Still just as unsafe, but makes it slightly more difficult to
+-- accidentally misuse.
 pattern Any :: forall a. a -> Any
 pattern Any a <- (unsafeCoerce -> a)
   where Any = unsafeCoerce
 {-# COMPLETE Any #-}
 
--- | Used to explicitly overwrite references to values that should not be retained by the GC.
+-- | Used to explicitly overwrite references to values that should not be
+-- retained by the GC.
 null# :: Any
 null# = Any ()
 
@@ -50,7 +52,7 @@ unIO :: IO a -> State# RealWorld -> (# State# RealWorld, a #)
 unIO (IO m) = m
 {-# INLINE unIO #-}
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 -- | The kind of effects.
 type Effect = (Type -> Type) -> Type -> Type
@@ -75,7 +77,7 @@ instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
   reifySubIndex = reifySubIndex @effs1 @effs3 + 1
   {-# INLINE reifySubIndex #-}
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 {- Note [The Eff Machine]
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -126,6 +128,36 @@ transformation to ensure unboxing happens, especially on datatypes (where the
 “worker” is the datatype definition itself and the “wrapper” is a pattern
 synonym.) -}
 
+-- | All @eff@ computations operate in the 'Eff' monad. 'Eff' computations are
+-- parameterized by a type-level list that specifies which effects they are
+-- allowed to perform. For example, a computation of type
+-- @'Eff' '['Control.Effect.Error' e, 'Control.Effect.Reader' r, 'Control.Effect.State' s] a@
+-- can raise exceptions of type @e@, can access a global environment of type
+-- @r@, and can read and modify a single cell of mutable state of type @s@.
+--
+-- To run an 'Eff' computation that performs effects, the effects must be
+-- explicitly /handled/. Functions that handle effects are called
+-- /effect handlers/, and they usually have types like the following:
+--
+-- @
+-- runX :: 'Eff' (X ': effs) a -> 'Eff' effs a
+-- @
+--
+-- Note that the argument to @runX@ can perform the @X@ effect, but the result
+-- cannot! Any @X@ operations have been handled by @runX@, which interprets
+-- their meaning. Examples of effect handlers include
+-- 'Control.Effect.runError', 'Control.Effect.runReader', and
+-- 'Control.Effect.runState'.
+--
+-- After all effects have been handled, the resulting computation will have type
+-- @'Eff' '[] a@, a computation that performs no effects. A computation with
+-- this type is pure, so it can be converted to an ordinary value using 'run'.
+--
+-- Some effects cannot be handled locally, but instead require performing I/O.
+-- These effects will delegate to the 'IOE' effect, which provides low-level
+-- interop with Haskell’s built-in 'IO' monad. After all other effects have been
+-- handled, a computation of type @'Eff' '['IOE'] a@ can be converted to an
+-- ordinary @'IO' a@ computation using 'runIO'.
 type Eff :: [Effect] -> Type -> Type
 type role Eff nominal representational
 newtype Eff effs a = Eff# { unEff# :: EVM a }
@@ -144,7 +176,7 @@ pattern EVM{unEVM} <- EVM# ((\m (BoxRegisters rs1) -> IO \s1 -> case m rs1 s1 of
   where EVM m = EVM# \rs1 s1 -> case m (BoxRegisters rs1) of IO f -> case f s1 of (# s2, (BoxRegisters rs2, a) #) -> (# s2, rs2, a #)
 {-# COMPLETE EVM #-}
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 newtype Registers# = Registers# (# PromptId, Targets# #)
 data Registers = BoxRegisters { unboxRegisters# :: Registers# }
@@ -230,7 +262,7 @@ parameterizeVM adjust (EVM m) = EVM \rs -> do
       in Capture target1 f1 (Continuation k3)
 {-# INLINE parameterizeVM #-}
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 newtype Targets# = Targets# (SmallArray# Any)
 newtype Targets = Targets (SmallArray Any)
@@ -256,7 +288,7 @@ pushTarget !h (Targets ts1) = Targets $ runSmallArray do
 dropTargets :: DebugCallStack => Int -> Targets -> Targets
 dropTargets idx (Targets ts) = Targets $ cloneSmallArray ts idx (sizeofSmallArray ts - idx)
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 instance Functor EVM where
   fmap f m = m >>= pure . f
@@ -276,8 +308,16 @@ instance MonadIO EVM where
   liftIO (IO m) = EVM# \rs s1 -> case m s1 of (# s2, a #) -> (# s2, rs, a #)
   {-# INLINE liftIO #-}
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
+-- | Runs a pure 'Eff' computation to produce a value.
+--
+-- @
+-- >>> 'run' '$' 'pure' 42
+-- 42
+-- >>> 'run' '$' 'Control.Effect.runError' '$' 'Control.Effect.throw' "bang"
+-- 'Left' "bang"
+-- @
 run :: Eff '[] a -> a
 run (Eff m) = unsafeDupablePerformIO (snd <$> m initialRegisters)
 
@@ -292,8 +332,21 @@ lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
 lift1 = lift
 {-# INLINE lift1 #-}
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
+-- | The monad that effect handlers run in.
+--
+--   * The @eff@ parameter is the effect being handled, and the @effs@ parameter
+--     includes the other effects in scope at the point of the 'handle' call
+--     (used by 'liftH').
+--
+--   * The @i@ parameter is the return type of the handled computation (used by
+--     'shift' and 'abort').
+--
+--   * The @effs'@ parameter is the list of effects in scope at the point of the
+--     originating 'send' call (used by 'locally').
+--
+-- See 'handle' for more details.
 type Handle :: Effect -> [Effect] -> Type -> [Effect] -> Type -> Type
 type role Handle nominal nominal representational nominal representational
 newtype Handle eff effs i effs' a = Handle# { runHandle# :: Registers# -> Eff effs' a }
@@ -319,11 +372,33 @@ instance Monad (Handle eff effs i effs') where
 newtype Handler eff
   = Handler { runHandler :: forall effs. eff :< effs => eff (Eff effs) ~> Eff effs }
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
 send e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e) rs
 
+-- | Handles the topmost effect in an 'Eff' computation. The given handler
+-- function must provide an interpretation for each effectful operation. The
+-- handler runs in the restrictive 'Handle' monad, which generally uses one of
+-- the following core 'Handle' operations:
+--
+--   * 'liftH' — Runs an action in the context of the original 'handle' call.
+--     This is the most common way to handle an effect.
+--
+--   * 'abort' — Aborts the computation to the 'handle' call and returns a value
+--     directly. This is usually used to implement exception-like operations.
+--
+--   * 'shift' — Captures the current continuation up to the 'handle' call and
+--     aborts, passing the captured continuation to the handler. This can be
+--     used to implement complex control operators such as coroutines or
+--     resumable exceptions.
+--
+--   * 'locally' — Runs an action directly in the context of the originating
+--     'send' call. This can be used to implement “scoped” operations like
+--     'Control.Effect.local' and 'Control.Effect.catch'.
+--
+-- See the documentation for each of the above functions for examples and more
+-- details.
 handle
   :: forall eff a effs
    . (forall effs'. eff :< effs' => eff (Eff effs') ~> Handle eff effs a effs')
@@ -392,7 +467,7 @@ shift :: ((a -> Eff effs i) -> Eff effs i) -> Handle eff effs i effs' a
 shift f = Handle \(Registers pid _) -> Eff \_ ->
   shiftVM \k1 -> pure $! Capture pid (\k2 -> unEff# (f (Eff# . k2))) k1
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 -- TODO: Fuse uses of swizzleTargets using RULES.
 class Swizzle effs1 effs2 where
@@ -425,8 +500,10 @@ swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
 swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
   adjustTargets (Registers pid ts) = Registers pid (swizzleTargets @effs1 @effs2 ts)
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
+-- | An effect used to run 'IO' operations via 'liftIO'. Handled by the special
+-- 'runIO' handler.
 data IOE :: Effect where
   LiftIO :: IO a -> IOE m a
 
@@ -434,6 +511,8 @@ unsafeIOToEff :: IO ~> Eff effs
 unsafeIOToEff = Eff# . liftIO
 {-# INLINE unsafeIOToEff #-}
 
+-- | Converts an 'Eff' computation to 'IO'. Unlike most handlers, 'IOE' must be
+-- the final effect handled, and 'runIO' completely replaces the call to 'run'.
 runIO :: Eff '[IOE] ~> IO
 runIO m0 = snd <$> unEff (handleIO m0) initialRegisters where
   handleIO = handle \case
@@ -443,7 +522,7 @@ instance IOE :< effs => MonadIO (Eff effs) where
   liftIO = send . LiftIO
   {-# INLINE liftIO #-}
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 data State s :: Effect where
   Get :: State s m s
@@ -479,7 +558,7 @@ evalState s0 (Eff m) = Eff \rs -> do
               Capture target2 f2 k4 -> handleCapture ref2 target2 f2 k4 k2
       pure $! Capture target1 f1 (Continuation k3)
 
--- -------------------------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 
 data NonDet :: Effect where
   Empty :: NonDet m a
