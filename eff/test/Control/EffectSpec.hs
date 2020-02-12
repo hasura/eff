@@ -91,3 +91,15 @@ spec = do
         it "returns output from each choice and sums the result" $ do
           let results = run $ runWriter @(Sum Integer) $ runNonDetAll go
           results `shouldBe` (Sum 6, [(Sum 3, True), (Sum 4, False)])
+
+  describe "Coroutine" do
+    let feed :: [b] -> Status effs a b c -> Eff effs [a]
+        feed (a:as) (Yielded b k) = (b:) <$> (feed as =<< k a)
+        feed []     (Yielded b _) = pure [b]
+        feed _      (Done _)      = pure []
+
+    it "allows suspending and resuming a computation" do
+      let squares :: Coroutine Integer Integer :< effs => Integer -> Eff effs ()
+          squares n = yield (n * n) >>= squares
+      run (feed [1..5] =<< runCoroutine @Integer @Integer (squares 0))
+        `shouldBe` [0, 1, 4, 9, 16, 25]

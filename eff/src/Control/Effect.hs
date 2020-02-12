@@ -54,6 +54,11 @@ module Control.Effect (
   , Alternative(..)
   , runNonDetAll
 
+  , Coroutine(..)
+  , yield
+  , Status(..)
+  , runCoroutine
+
   -- * Re-exports
   , (&)
   , type (~>)
@@ -74,14 +79,12 @@ data Error e :: Effect where
 
 throw :: Error e :< effs => e -> Eff effs a
 throw = send . Throw
-{-# INLINE throw #-}
 
 catch :: Error e :< effs => Eff (Error e ': effs) a -> (e -> Eff effs a) -> Eff effs a
 catch a b = send $ Catch a b
-{-# INLINE catch #-}
 
 runError :: forall e a effs. Eff (Error e ': effs) a -> Eff effs (Either e a)
-runError m = (Right <$> m) & handle \case
+runError = fmap Right >>> handle \case
   Throw e -> abort $ Left e
   Catch m' f -> locally (either f pure =<< runError m')
 
@@ -91,11 +94,9 @@ data Reader r :: Effect where
 
 ask :: Reader r :< effs => Eff effs r
 ask = send Ask
-{-# INLINE ask #-}
 
 local :: Reader r1 :< effs => (r1 -> r2) -> Eff (Reader r2 ': effs) ~> Eff effs
 local a b = send $ Local a b
-{-# INLINE local #-}
 
 runReader :: r -> Eff (Reader r ': effs) ~> Eff effs
 runReader r = handle \case
@@ -104,15 +105,12 @@ runReader r = handle \case
 
 get :: State s :< effs => Eff effs s
 get = send Get
-{-# INLINE get #-}
 
 put :: State s :< effs => s -> Eff effs ()
 put = send . Put
-{-# INLINE put #-}
 
 modify :: State s :< effs => (s -> s) -> Eff effs ()
 modify f = get >>= put . f
-{-# INLINE modify #-}
 
 runState :: forall s a effs. s -> Eff (State s ': effs) a -> Eff effs (s, a)
 runState s m = evalState s (curry swap <$> m <*> get)
@@ -127,15 +125,12 @@ data Writer w :: Effect where
 
 tell :: Writer w :< effs => w -> Eff effs ()
 tell = send . Tell
-{-# INLINE tell #-}
 
 listen :: Writer w :< effs => Eff (Writer w ': effs) a -> Eff effs (w, a)
 listen = send . Listen
-{-# INLINE listen #-}
 
 censor :: Writer w :< effs => (w -> w) -> Eff (Writer w ': effs) a -> Eff effs a
 censor a b = send $ Censor a b
-{-# INLINE censor #-}
 
 runWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs (w, a)
 runWriter = swizzle
@@ -143,23 +138,23 @@ runWriter = swizzle
         Tell w -> liftH $ tellS w
         Listen m -> locally $ runListen m
         Censor f m -> locally $ runCensor f m
-  >>> runState @w mempty
+  >>> runState mempty
   where
     tellS :: State w :< effs' => w -> Eff effs' ()
     tellS w = get >>= \ws -> put $! (ws <> w)
 
     runListen :: forall effs' b. Writer w :< effs' => Eff (Writer w ': effs') b -> Eff effs' (w, b)
     runListen = swizzle
-      >>> handle @(Writer w) \case
+      >>> handle \case
             Tell w -> liftH do
               tellS w
               lift1 $ tell w
             Listen m -> locally $ runListen m
             Censor f m -> locally $ runCensor f m
-      >>> runState @w mempty
+      >>> runState mempty
 
     runCensor :: forall effs'. Writer w :< effs' => (w -> w) -> Eff (Writer w ': effs') ~> Eff effs'
-    runCensor f = handle @(Writer w) \case
+    runCensor f = handle \case
       Tell w -> liftH $ lift1 (tell $! f w)
       Listen m -> locally $ runListen m
       Censor g m -> locally $ runCensor g m
@@ -171,6 +166,20 @@ execWriter :: forall w effs a. Monoid w => Eff (Writer w ': effs) a -> Eff effs 
 execWriter = fmap fst . runWriter
 
 runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
-runNonDetAll m = (pure <$> m) & handle \case
+runNonDetAll = fmap pure >>> handle \case
   Empty -> abort empty
   Choose -> shift \k -> liftA2 (<|>) (k True) (k False)
+
+data Coroutine a b :: Effect where
+  Yield :: a -> Coroutine a b m b
+
+yield :: Coroutine a b :< effs => a -> Eff effs b
+yield = send . Yield
+
+data Status effs a b c
+  = Done c
+  | Yielded a !(b -> Eff effs (Status effs a b c))
+
+runCoroutine :: Eff (Coroutine a b ': effs) c -> Eff effs (Status effs a b c)
+runCoroutine = fmap Done >>> handle \case
+  Yield a -> shift \k -> pure $! Yielded a k
