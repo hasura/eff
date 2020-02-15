@@ -77,9 +77,8 @@ instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
   reifySubIndex = reifySubIndex @effs1 @effs3 + 1
   {-# INLINE reifySubIndex #-}
 
--- -----------------------------------------------------------------------------
-
-{- Note [The Eff Machine]
+{- -----------------------------------------------------------------------------
+-- Note [The Eff Machine]
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 The Eff monad is best thought of as a “embedded virtual machine.” Given
 primitive support for continuation manipulation from the host, Eff efficiently
@@ -92,7 +91,7 @@ At any time, the Eff machine conceptually manages two pieces of state:
      “thread-local” state, and dynamic winders.
 
   2. The /targets vector/, which maps a list of effects to the corresponding
-     metacontinuation frames that handle them.
+     metacontinuation frames that handle them. (See Note [The targets vector].)
 
 However, the representation of the metacontinuation stack is not explicit: it is
 implicitly encoded as stack frames on the ordinary GHC RTS stack that cooperate
@@ -104,18 +103,18 @@ GHC performs an optimization called the /worker-wrapper transformation/, which
 is used to propagate strictness information, unboxing, and more. The idea is
 simple: if a function strictly operates on a boxed value, like
 
-  f :: Int -> Foo
-  f !n = ...
+    f :: Int -> Foo
+    f !n = ...
 
 then GHC will internally rewrite it into a pair of definitions, a /worker/ and a
 /wrapper/:
 
-  $wf :: Int# -> Foo
-  $wf n = ...
+    $wf :: Int# -> Foo
+    $wf n = ...
 
-  f :: Int -> Foo
-  f (I# n) = $wf n
-  {-# INLINE f #-}
+    f :: Int -> Foo
+    f (I# n) = $wf n
+    {-# INLINE f #-}
 
 If some other code uses f, the wrapper will be inlined at the call site, and the
 exposed unfolding allows GHC to make a direct call to $wf passing an unboxed
@@ -164,7 +163,7 @@ newtype Eff effs a = Eff# { unEff# :: EVM a }
   deriving (Functor, Applicative, Monad)
 
 pattern Eff :: (Registers -> IO (Registers, a)) -> Eff effs a
-pattern Eff{unEff} = Eff# (EVM unEff)
+pattern Eff{unEff} = Eff# (EVM unEff) -- see Note [Manual worker/wrapper]
 {-# COMPLETE Eff #-}
 
 type EVM :: TYPE r -> Type
@@ -172,6 +171,7 @@ newtype EVM a = EVM#
   { unEVM# :: Registers# -> State# RealWorld -> (# State# RealWorld, Registers#, a #) }
 
 pattern EVM :: (Registers -> IO (Registers, a)) -> EVM a
+-- see Note [Manual worker/wrapper]
 pattern EVM{unEVM} <- EVM# ((\m (BoxRegisters rs1) -> IO \s1 -> case m rs1 s1 of (# s2, rs2, a #) -> (# s2, (BoxRegisters rs2, a) #)) -> unEVM)
   where EVM m = EVM# \rs1 s1 -> case m (BoxRegisters rs1) of IO f -> case f s1 of (# s2, (BoxRegisters rs2, a) #) -> (# s2, rs2, a #)
 {-# COMPLETE EVM #-}
@@ -181,6 +181,7 @@ pattern EVM{unEVM} <- EVM# ((\m (BoxRegisters rs1) -> IO \s1 -> case m rs1 s1 of
 newtype Registers# = Registers# (# PromptId, Targets# #)
 data Registers = BoxRegisters { unboxRegisters# :: Registers# }
 pattern Registers :: PromptId -> Targets -> Registers
+-- see Note [Manual worker/wrapper]
 pattern Registers pid ts <- BoxRegisters (Registers# (# pid, (BoxTargets -> ts) #))
   where Registers pid (BoxTargets ts) = BoxRegisters (Registers# (# pid, ts #))
 {-# COMPLETE Registers #-}
@@ -190,6 +191,7 @@ initialRegisters = Registers (PromptId 0) noTargets
 
 newtype PromptId = PromptId# Int#
 pattern PromptId :: Int -> PromptId
+-- see Note [Manual worker/wrapper]
 pattern PromptId{unPromptId} <- PromptId# (I# -> unPromptId)
   where PromptId (I# n) = PromptId# n
 {-# COMPLETE PromptId #-}
@@ -262,7 +264,55 @@ parameterizeVM adjust (EVM m) = EVM \rs -> do
       in Capture target1 f1 (Continuation k3)
 {-# INLINE parameterizeVM #-}
 
--- -----------------------------------------------------------------------------
+{- -----------------------------------------------------------------------------
+-- Note [The targets vector]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In most implementations of delimited control or algebraic effects, handling an
+effect involves walking the prompt/handler stack looking for a frame with the
+right tag. This is a little unfortunate, as in the large majority of use cases,
+the handler stack changes infrequently relative to the number of effectful
+operations that are performed. Therefore, we take a slightly different approach,
+and we cache which effects are handled by which handlers at any given time.
+
+This cache is stored in the /targets vector/ (represented by type `Targets`), an
+immutable SmallArray that contains pointers to `Handler`s. Each effect is mapped
+to a handler using its index in the type-level list. For example, if we have a
+computation of type
+
+    Eff '[Reader Int, NonDet, Error String] a
+
+then the targets vector will be three elements long. Index 0 will point to a
+handler for `Reader Int`, index 1 will point to a handler for `NonDet`, and
+index 2 will point to a handler for `Error String`.
+
+The targets vector makes `send` a constant-time operation, regardless of the
+number of effects. The `:<` class provides the effect’s index, so `send` need
+only look up the index in the targets vector and invoke the handler. This is a
+particularly good tradeoff in situations where the following conditions hold:
+
+  1. Most effects are handled at the top-level of the program and changed
+     infrequently during runtime.
+
+  2. Most calls to `send` do not need to capture the continuation.
+
+In practice, these conditions seem usually true. However, if they aren’t,
+maintaining the targets vector has a cost: it needs to be recomputed on every
+use of `handle` or `lift`, and continuation restore requires recomputing the
+vector for every `handle` or `lift` frame in the captured continuation! In most
+cases, the vector is very small, so this isn’t a big deal.
+
+If the overhead of maintaining the targets vector ever turns out to be
+significant, there are a variety of potential optimizations that we currently
+don’t do. Here are a couple possibilities:
+
+  * Most continuations are restored in the same context where they’re captured,
+    so there’s no need to recompute the targets vectors upon restore. Skipping
+    is the recomputation in that case is likely a particularly easy win.
+
+  * If the list of effects grows very large, the cost of copying the whole
+    vector could become prohibitive. In those situations, we could switch to a
+    more sophisticated representation that allows more sharing while still
+    providing decent access time, avoiding the need for unbounded copying. -}
 
 newtype Targets# = Targets# (SmallArray# Any)
 newtype Targets = Targets (SmallArray Any)
@@ -351,6 +401,7 @@ type Handle :: Effect -> [Effect] -> Type -> [Effect] -> Type -> Type
 type role Handle nominal nominal representational nominal representational
 newtype Handle eff effs i effs' a = Handle# { runHandle# :: Registers# -> Eff effs' a }
 pattern Handle :: (Registers -> Eff effs' a) -> Handle eff effs i effs' a
+-- see Note [Manual worker/wrapper]
 pattern Handle{runHandle} <- Handle# ((\f (BoxRegisters rs) -> f rs) -> runHandle)
   where Handle f = Handle# \rs -> f (BoxRegisters rs)
 {-# COMPLETE Handle #-}
