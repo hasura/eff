@@ -15,7 +15,6 @@ import Control.Applicative
 import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.IO.Class
-import Control.Natural (type (~>))
 import Data.Bool (bool)
 import Data.IORef
 import Data.Kind (Constraint, Type)
@@ -360,14 +359,14 @@ instance MonadIO EVM where
 run :: Eff '[] a -> a
 run (Eff m) = unsafeDupablePerformIO (snd <$> m initialRegisters)
 
-lift :: forall effs1 effs2. effs1 :<< effs2 => Eff effs1 ~> Eff effs2
+lift :: forall effs1 effs2 a. effs1 :<< effs2 => Eff effs1 a -> Eff effs2 a
 lift (Eff# m) = Eff# (parameterizeVM adjustTargets m) where
   adjustTargets (Registers pid ts) = Registers pid (dropTargets (reifySubIndex @effs1 @effs2) ts)
 
 -- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
 -- behaviorally identical to just using 'lift', but the restricted type can produce better type
 -- inference.
-lift1 :: forall eff effs. Eff effs ~> Eff (eff ': effs)
+lift1 :: forall eff effs a. Eff effs a -> Eff (eff ': effs) a
 lift1 = lift
 {-# INLINE lift1 #-}
 
@@ -410,11 +409,11 @@ instance Monad (Handle eff effs i effs') where
   {-# INLINE (>>=) #-}
 
 newtype Handler eff
-  = Handler { runHandler :: forall effs. eff :< effs => eff (Eff effs) ~> Eff effs }
+  = Handler { runHandler :: forall effs a. eff :< effs => eff (Eff effs) a -> Eff effs a }
 
 -- -----------------------------------------------------------------------------
 
-send :: forall eff effs. eff :< effs => eff (Eff effs) ~> Eff effs
+send :: forall eff a effs. eff :< effs => eff (Eff effs) a -> Eff effs a
 send e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e) rs
 
 -- | Handles the topmost effect in an 'Eff' computation. The given handler
@@ -441,7 +440,7 @@ send e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e
 -- details.
 handle
   :: forall eff a effs
-   . (forall effs'. eff :< effs' => eff (Eff effs') ~> Handle eff effs a effs')
+   . (forall effs' b. eff :< effs' => eff (Eff effs') b -> Handle eff effs a effs' b)
   -- ^ The handler function.
   -> Eff (eff ': effs) a
   -- ^ The action to handle.
@@ -493,10 +492,10 @@ handle f (Eff m1) = Eff# (handleVM (fmap (Return . snd) . m1))
               Capture target g k4 -> pure $! handleCaptureElsewhere target g k4 k2
       in Capture target1 f1 (Continuation k3)
 
-locally :: Eff effs' ~> Handle eff effs i effs'
+locally :: Eff effs' a -> Handle eff effs i effs' a
 locally m = Handle \_ -> m
 
-liftH :: Eff (eff ': effs) ~> Handle eff effs i effs'
+liftH :: Eff (eff ': effs) a -> Handle eff effs i effs' a
 liftH (Eff# m) = Handle \(Registers _ ts) ->
   Eff# (parameterizeVM (\(Registers pid _) -> Registers pid ts) m)
 
@@ -536,7 +535,7 @@ instance (eff :< effs2, Swizzle effs1 effs2) => Swizzle (eff ': effs1) effs2 whe
 -- a pretty good job, but sometimes it doesn’t get it quite right, and you may receive a rather
 -- mystifying type error. In that case, fear not: all you need to do is offer it a little help by
 -- adding some type annotations (or using @TypeApplications@).
-swizzle :: forall effs1 effs2. Swizzle effs1 effs2 => Eff effs1 ~> Eff effs2
+swizzle :: forall effs1 effs2 a. Swizzle effs1 effs2 => Eff effs1 a -> Eff effs2 a
 swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
   adjustTargets (Registers pid ts) = Registers pid (swizzleTargets @effs1 @effs2 ts)
 
@@ -547,13 +546,13 @@ swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
 data IOE :: Effect where
   LiftIO :: IO a -> IOE m a
 
-unsafeIOToEff :: IO ~> Eff effs
+unsafeIOToEff :: IO a -> Eff effs a
 unsafeIOToEff = Eff# . liftIO
 {-# INLINE unsafeIOToEff #-}
 
 -- | Converts an 'Eff' computation to 'IO'. Unlike most handlers, 'IOE' must be
 -- the final effect handled, and 'runIO' completely replaces the call to 'run'.
-runIO :: Eff '[IOE] ~> IO
+runIO :: Eff '[IOE] a -> IO a
 runIO m0 = snd <$> unEff (handleIO m0) initialRegisters where
   handleIO = handle \case
     LiftIO m -> locally (unsafeIOToEff m)
@@ -568,13 +567,14 @@ data State s :: Effect where
   Get :: State s m s
   Put :: ~s -> State s m ()
 
-evalState :: forall s effs. s -> Eff (State s ': effs) ~> Eff effs
+evalState :: s -> Eff (State s ': effs) a -> Eff effs a
 evalState s0 (Eff m) = Eff \rs -> do
   ref <- newIORef s0
   resetVM (Return . snd <$> m (pushHandler ref rs)) >>= \case
     Return a -> pure (rs, a)
     Capture target f k1 -> shiftVM \k2 -> handleCapture ref target f k1 k2
   where
+    pushHandler :: forall s. IORef s -> Registers -> Registers
     pushHandler ref (Registers pid ts) =
       let h :: Handler (State s)
           h = Handler \case
