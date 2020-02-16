@@ -5,8 +5,8 @@ addons:
     sources: [hvr-ghc]
     packages: [cabal-install-3.0]
 env:
-- GHC_VERSION: 8.11.0.20200211
-  GHC_BINDIST: https://gitlab.haskell.org/lexi.lambda/ghc/raw/continuations-bindist-8.11.0.20200211-x86_64-xenial/ghc.tar.xz
+- GHC_VERSION: 8.11.0.20200215
+  GHC_BINDIST: https://gitlab.haskell.org/lexi.lambda/ghc/raw/continuations-bindist-8.11.0.20200215-x86_64-xenial/ghc.tar.xz
 
 cache:
   directories:

@@ -4,9 +4,8 @@
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE UnboxedTuples #-}
-{-# LANGUAGE UnboxedSums #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Control.Effect.Internal where
 
@@ -21,7 +20,7 @@ import Data.Bool (bool)
 import Data.IORef
 import Data.Kind (Constraint, Type)
 import Data.Type.Equality ((:~:)(..), gcastWith)
-import GHC.Exts (Any, Int(..), Int#, RealWorld, SmallArray#, State#, TYPE, reset#, shift#, applyContinuation#)
+import GHC.Exts (Any, Int(..), Int#, RealWorld, SmallArray#, State#, TYPE, reset#, shift#)
 import GHC.Types (IO(..))
 import System.IO.Unsafe (unsafeDupablePerformIO)
 import Unsafe.Coerce (unsafeCoerce)
@@ -201,46 +200,36 @@ instance Show AbortException where
   show (AbortException _ _) = "AbortException"
 instance Exception AbortException
 
-newtype Result# a = Result# (# a | (# PromptId, Any, Any #) #)
-data Result a = BoxResult (Result# a)
-pattern Return :: a -> Result a
-pattern Return a = BoxResult (Result# (# a | #))
-pattern Capture
-  :: PromptId
-  -- ^ The prompt to capture up to.
-  -> ((b -> EVM c) -> EVM c)
-  -- ^ The metacontinuation passed by the user to the original call to 'shift'. This should be
-  -- invoked with the fully-composed continuation after capturing is complete.
-  -> Continuation b a
-  -- ^ The composed continuation captured so far.
-  -> Result a
-pattern Capture pid f k = BoxResult (Result# (# | (# pid, Any f, Any k #) #))
-{-# COMPLETE Return, Capture #-}
+data Result a where
+  Return :: ~a -> Result a
+  Capture
+    :: PromptId
+    -- ^ The prompt to capture up to.
+    -> ((b -> EVM c) -> EVM c)
+    -- ^ The metacontinuation passed by the user to the original call to
+    -- 'shift'. This should be invoked with the fully-composed continuation
+    -- after capturing is complete.
+    -> Continuation b a
+    -- ^ The composed continuation captured so far.
+    -> Result a
 
 newtype Continuation a b = Continuation#
-  { runContinuation# :: a -> Registers# -> State# RealWorld -> (# State# RealWorld, Result# b #) }
+  { runContinuation# :: a -> Registers# -> State# RealWorld -> (# State# RealWorld, Result b #) }
 
 pattern Continuation :: (a -> Registers -> IO (Result b)) -> Continuation a b
+-- see Note [Manual worker/wrapper]
 pattern Continuation{runContinuation} <- Continuation#
-          ((\k a (BoxRegisters rs) -> IO \s1 ->
-              case k a rs s1 of (# s2, r #) -> (# s2, BoxResult r #))
-           -> runContinuation)
-  where Continuation k = Continuation# \a rs s1 -> case unIO (k a (BoxRegisters rs)) s1 of
-          (# s2, BoxResult r #) -> (# s2, r #)
+          ((\k a (BoxRegisters rs) -> IO (k a rs)) -> runContinuation)
+  where Continuation k = Continuation# \a rs -> unIO (k a (BoxRegisters rs))
 {-# COMPLETE Continuation #-}
 
 resetVM :: IO (Result a) -> IO (Result a)
-resetVM (IO m) = IO \s1 ->
-  case reset# (\s2 -> case m s2 of (# s3, BoxResult r #) -> (# s3, r #)) s1 of
-    (# s2, r #) -> (# s2, BoxResult r #)
+resetVM (IO m) = IO (reset# m)
 {-# INLINE resetVM #-}
 
-shiftVM :: (Continuation a b -> IO (Result b)) -> IO (Registers, a)
+shiftVM :: forall a b. (Continuation a b -> IO (Result b)) -> IO (Registers, a)
 shiftVM f = IO \s1 -> case shift# f# s1 of (# s2, (# rs, a #) #) -> (# s2, (BoxRegisters rs, a) #)
-  where
-    f# k# s1 =
-      let !k = Continuation# \a rs -> applyContinuation# k# (\s2 -> (# s2, (# rs, a #) #))
-      in case unIO (f k) s1 of (# s2, BoxResult r #) -> (# s2, r #)
+  where f# k# = unIO $ f $ Continuation# \a rs -> k# (\s -> (# s, (# rs, a #) #))
 {-# INLINE shiftVM #-}
 
 -- TODO: Share some code between `parameterizeVM` and `handle`.
