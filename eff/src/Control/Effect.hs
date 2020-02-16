@@ -94,6 +94,7 @@ module Control.Effect (
 
   -- * Re-exports
   , (&)
+  , (>>>)
   , type (~>)
   ) where
 

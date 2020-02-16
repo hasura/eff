@@ -66,6 +66,7 @@ test-suite eff-tests
   main-is: Main.hs
   other-modules:
     Control.EffectSpec
+    Control.Effect.Examples.FileSystemSpec
 
   if flag(debug)
     ghc-options: -debug -with-rtsopts=-DS
