@@ -19,7 +19,7 @@ import Data.Bool (bool)
 import Data.IORef
 import Data.Kind (Constraint, Type)
 import Data.Type.Equality ((:~:)(..), gcastWith)
-import GHC.Exts (Any, Int(..), Int#, RealWorld, SmallArray#, State#, TYPE, reset#, shift#)
+import GHC.Exts (Any, Int(..), Int#, RealWorld, RuntimeRep(..), SmallArray#, State#, TYPE, reset#, shift#)
 import GHC.Types (IO(..))
 import System.IO.Unsafe (unsafeDupablePerformIO)
 import Unsafe.Coerce (unsafeCoerce)
@@ -52,6 +52,20 @@ unIO (IO m) = m
 
 -- -----------------------------------------------------------------------------
 
+data Dict c = c => Dict
+
+type DictRep :: Constraint -> Type
+type family DictRep c
+
+type WithDict :: Constraint -> Type -> Type
+newtype WithDict c r = WithDict { unWithDict :: c => r }
+
+reflectDict :: forall c r. DictRep c -> (c => r) -> r
+reflectDict !d x = unsafeCoerce (WithDict @c @r x) d
+{-# INLINE reflectDict #-}
+
+-- -----------------------------------------------------------------------------
+
 -- | The kind of effects.
 type Effect = (Type -> Type) -> Type -> Type
 
@@ -74,6 +88,17 @@ instance {-# OVERLAPPING #-} effs :<< effs where
 instance (effs2 ~ (eff ': effs3), effs1 :<< effs3) => effs1 :<< effs2 where
   reifySubIndex = reifySubIndex @effs1 @effs3 + 1
   {-# INLINE reifySubIndex #-}
+
+type instance DictRep (eff :< effs) = Int
+type instance DictRep (effs1 :<< effs2) = Int
+
+type (:<#) :: Effect -> [Effect] -> TYPE 'IntRep
+-- see Note [Manual worker/wrapper]
+newtype eff :<# effs = ReflectIndex# { reifyIndex# :: Int# }
+pattern IndexDict# :: forall eff effs. () => eff :< effs => eff :<# effs
+pattern IndexDict# <- ReflectIndex# ((\idx -> reflectDict @(eff :< effs) (I# idx) (Dict @(eff :< effs))) -> Dict)
+  where IndexDict# = case reifyIndex @eff @effs of I# idx -> ReflectIndex# idx
+{-# COMPLETE IndexDict# #-}
 
 {- -----------------------------------------------------------------------------
 -- Note [The Eff Machine]
@@ -177,7 +202,7 @@ pattern EVM{unEVM} <- EVM# ((\m (BoxRegisters rs1) -> IO \s1 -> case m rs1 s1 of
 -- -----------------------------------------------------------------------------
 
 newtype Registers# = Registers# (# PromptId, Targets# #)
-data Registers = BoxRegisters { unboxRegisters# :: Registers# }
+data Registers = BoxRegisters { unboxRegisters :: Registers# }
 pattern Registers :: PromptId -> Targets -> Registers
 -- see Note [Manual worker/wrapper]
 pattern Registers pid ts <- BoxRegisters (Registers# (# pid, (BoxTargets -> ts) #))
@@ -199,6 +224,17 @@ instance Show AbortException where
   show (AbortException _ _) = "AbortException"
 instance Exception AbortException
 
+-- | Every prompt installed by 'resetVM' returns a 'Result'. On normal returns,
+-- the result is just wrapped in 'Return', but when a continuation is being
+-- captured, the result is 'Capture', and the fields inside are used to
+-- determine what to do.
+--
+-- When capturing, the included 'PromptId' identifies the prompt to capture up
+-- to. When a more nested prompt receives a 'Capture' request to a parent
+-- prompt, it calls 'shiftVM' again to capture up to the next prompt on the
+-- stack, composes the captured continuation with the continuation captured so
+-- far, and returns a new 'Capture' result. Once the target prompt has been
+-- reached, it invokes the metacontinuation, and execution continues.
 data Result a where
   Return :: ~a -> Result a
   Capture
@@ -226,7 +262,7 @@ resetVM :: IO (Result a) -> IO (Result a)
 resetVM (IO m) = IO (reset# m)
 {-# INLINE resetVM #-}
 
-shiftVM :: forall a b. (Continuation a b -> IO (Result b)) -> IO (Registers, a)
+shiftVM :: (Continuation a b -> IO (Result b)) -> IO (Registers, a)
 shiftVM f = IO \s1 -> case shift# f# s1 of (# s2, (# rs, a #) #) -> (# s2, (BoxRegisters rs, a) #)
   where f# k# = unIO $ f $ Continuation# \a rs -> k# (\s -> (# s, (# rs, a #) #))
 {-# INLINE shiftVM #-}
@@ -316,7 +352,7 @@ lookupTarget :: forall effs eff. (DebugCallStack, eff :< effs) => Targets -> Han
 lookupTarget (Targets ts) = case indexSmallArray ts (reifyIndex @eff @effs) of (# Any h #) -> h
 
 pushTarget :: Handler eff -> Targets -> Targets
-pushTarget !h (Targets ts1) = Targets $ runSmallArray do
+pushTarget h (Targets ts1) = Targets $ runSmallArray do
   let len = sizeofSmallArray ts1
   ts2 <- newSmallArray (len + 1) null#
   writeSmallArray ts2 0 (Any h)
@@ -409,12 +445,21 @@ instance Monad (Handle eff effs i effs') where
   {-# INLINE (>>=) #-}
 
 newtype Handler eff
-  = Handler { runHandler :: forall effs a. eff :< effs => eff (Eff effs) a -> Eff effs a }
+  = Handler# { runHandler# :: forall effs a. eff :<# effs -> eff (Eff effs) a -> Eff effs a }
+newtype WrappedHandler eff
+  -- Unfortunately necessary to avoid the need for impredicative polymorphism in
+  -- the definition of the Handler pattern synonym.
+  = WrapHandler (forall effs a. eff :< effs => eff (Eff effs) a -> Eff effs a)
+pattern Handler :: (forall effs a. eff :< effs => eff (Eff effs) a -> Eff effs a) -> Handler eff
+-- see Note [Manual worker/wrapper]
+pattern Handler{runHandler} <- ((\(Handler# f) -> WrapHandler (f IndexDict#)) -> WrapHandler runHandler)
+  where Handler f = Handler# \IndexDict# -> f
+{-# COMPLETE Handler #-}
 
 -- -----------------------------------------------------------------------------
 
 send :: forall eff a effs. eff :< effs => eff (Eff effs) a -> Eff effs a
-send e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e) rs
+send !e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) e) rs
 
 -- | Handles the topmost effect in an 'Eff' computation. The given handler
 -- function must provide an interpretation for each effectful operation. The
@@ -445,19 +490,28 @@ handle
   -> Eff (eff ': effs) a
   -- ^ The action to handle.
   -> Eff effs a
-handle f (Eff m1) = Eff# (handleVM (fmap (Return . snd) . m1))
+handle f = handleVM \rs -> Handler \e -> runHandle# (f e) rs
+{-# INLINE handle #-}
+
+handleVM :: forall eff a effs. (Registers# -> Handler eff) -> Eff (eff ': effs) a -> Eff effs a
+handleVM f (Eff m1) = Eff# (withHandler (fmap (Return . snd) . m1))
   where
-    handleVM :: (Registers -> IO (Result a)) -> EVM a
-    handleVM m2 = EVM \rs1 -> do
+    withHandler :: (Registers -> IO (Result a)) -> EVM a
+    -- GHC can’t figure out how to pull this small bit of unboxing out of the
+    -- recursive knot we’re tying, so we do it manually here
+    withHandler g = withHandler# (\rs -> g $ BoxRegisters rs)
+    {-# INLINE withHandler #-}
+
+    withHandler# :: (Registers# -> IO (Result a)) -> EVM a
+    withHandler# m2 = EVM \rs1 -> do
       let !rs2@(Registers pid _) = pushPrompt rs1
-      resetPrompt rs1 pid (m2 rs2) >>= \case
+      resetPrompt rs1 pid (m2 (unboxRegisters rs2)) >>= \case
         Return a -> pure (rs1, a)
         Capture target g k1 -> shiftVM \k2 -> pure $! handleCaptureElsewhere target g k1 k2
 
     pushPrompt (Registers pid1 ts1) =
       let pid2 = PromptId (unPromptId pid1 + 1)
-          h = Handler \e -> runHandle (f e) rs2
-          ts2 = pushTarget h ts1
+          ts2 = pushTarget (f (unboxRegisters rs2)) ts1
           rs2 = Registers pid2 ts2
       in rs2
 
@@ -475,7 +529,7 @@ handle f (Eff m1) = Eff# (handleVM (fmap (Return . snd) . m1))
               -- We’re capturing up to this prompt, so the metacontinuation’s result type must be
               -- this function’s result type.
               gcastWith (axiom @a @c) do
-                Return . snd <$> unEVM (g (handleVM . runContinuation k1)) rs
+                Return . snd <$> unEVM (g (withHandler . runContinuation k1)) rs
         result -> pure result
 
     handleCaptureElsewhere
