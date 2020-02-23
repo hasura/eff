@@ -26,22 +26,22 @@ writeFile a b = send $ WriteFile a b
 -- IO handler
 
 runFileSystemIO :: IOE :< effs => Eff (FileSystem ': effs) a -> Eff effs a
-runFileSystemIO = handle \case
-  ReadFile path -> liftH $ liftIO $ IO.readFile path
-  WriteFile path contents -> liftH $ liftIO $ IO.writeFile path contents
+runFileSystemIO = interpret \case
+  ReadFile path -> liftIO $ IO.readFile path
+  WriteFile path contents -> liftIO $ IO.writeFile path contents
 
 -- -----------------------------------------------------------------------------
 -- pure handler
 
 runFileSystemPure :: Error String :< effs => Eff (FileSystem ': effs) a -> Eff effs a
 runFileSystemPure = swizzle
-  >>> handle \case
-        ReadFile path -> liftH do
+  >>> interpret \case
+        ReadFile path -> do
           fileSystem <- get
           case lookup path fileSystem of
             Just contents -> pure contents
             Nothing       -> throw ("readFile: no such file " <> path)
-        WriteFile path contents -> liftH do
+        WriteFile path contents -> do
           fileSystem <- get
           -- add the new file and remove an old file with the same name, if it exists
           put ((path, contents) : filter ((/= path) . fst) fileSystem)

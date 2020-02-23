@@ -44,6 +44,9 @@ module Control.Effect (
   , send
 
   -- * Handling effects
+  -- ** Simple effect handlers
+  , interpret
+  -- ** Advanced effect handlers
   , Handle
   , handle
   , liftH
@@ -104,6 +107,28 @@ import Data.Function
 import Data.Tuple (swap)
 
 import Control.Effect.Internal
+
+-- | The simplest way to handle an effect. Each use of 'send' for the handled
+-- effect dispatches to the handler function, which provides an interpretation
+-- for the operation. The handler function may handle the operation directly, or
+-- it may defer to other effects currently in scope.
+--
+-- Most effect handlers should be implemented using 'interpret', possibly with
+-- the help of additional 'Error' or 'State' effects. Especially complex
+-- handlers can be defined via the more general 'handle', which 'interpret' is
+-- defined in terms of:
+--
+-- @
+-- 'interpret' f = 'handle' ('liftH' '.' f)
+-- @
+interpret
+  :: forall eff a effs
+   . (forall m b. eff m b -> Eff (eff ': effs) b)
+  -- ^ The handler function.
+  -> Eff (eff ': effs) a
+  -- ^ The action to handle.
+  -> Eff effs a
+interpret f = handle (liftH . f)
 
 data Error e :: Effect where
   Throw :: e -> Error e m a
