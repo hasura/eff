@@ -48,7 +48,7 @@ runFileSystemIO = interpret \case
 -- pure handler
 
 runFileSystemPure :: Error String :< effs => Eff (FileSystem ': effs) a -> Eff effs a
-runFileSystemPure = swizzle
+runFileSystemPure = lift
   >>> interpret \case
         ReadFile path -> do
           fileSystem <- get

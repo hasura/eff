@@ -20,7 +20,7 @@ import Data.Function
 -- or use 'Data.Semigroup.Dual' to flip the argument order of '<>' (but beware
 -- that this will cause the elements to be accumulated in reverse order).
 runWriter :: Monoid w => Eff (Writer w ': effs) a -> Eff effs (w, a)
-runWriter (m0 :: Eff (Writer w ': effs) a) = swizzle m0
+runWriter (m0 :: Eff (Writer w ': effs) a) = lift m0
   & handle \case
       Tell w -> liftH $ tellS w
       Listen m -> locally $ runListen m
@@ -31,7 +31,7 @@ runWriter (m0 :: Eff (Writer w ': effs) a) = swizzle m0
     tellS w = get >>= \ws -> put $! (ws <> w)
 
     runListen :: Writer w :< effs' => Eff (Writer w ': effs') b -> Eff effs' (w, b)
-    runListen = swizzle
+    runListen = lift
       >>> handle \case
             Tell w -> liftH do
               tellS w

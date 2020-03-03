@@ -36,12 +36,12 @@ module Control.Effect (
   , run
   , lift
   , lift1
-  , swizzle
 
   -- * Defining new effects
   , Effect
-  , (:<)
   , send
+  , (:<)
+  , (:<<)
 
   -- * Handling effects
   -- ** Simple effect handlers

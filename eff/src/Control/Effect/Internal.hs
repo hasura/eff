@@ -382,8 +382,6 @@ instance MonadIO EVM where
   liftIO (IO m) = EVM# \rs s1 -> case m s1 of (# s2, a #) -> (# s2, rs, a #)
   {-# INLINE liftIO #-}
 
--- -----------------------------------------------------------------------------
-
 -- | Runs a pure 'Eff' computation to produce a value.
 --
 -- @
@@ -394,17 +392,6 @@ instance MonadIO EVM where
 -- @
 run :: Eff '[] a -> a
 run (Eff m) = unsafeDupablePerformIO (snd <$> m initialRegisters)
-
-lift :: forall effs1 effs2 a. effs1 :<< effs2 => Eff effs1 a -> Eff effs2 a
-lift (Eff# m) = Eff# (parameterizeVM adjustTargets m) where
-  adjustTargets (Registers pid ts) = Registers pid (dropTargets (reifySubIndex @effs1 @effs2) ts)
-
--- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
--- behaviorally identical to just using 'lift', but the restricted type can produce better type
--- inference.
-lift1 :: forall eff effs a. Eff effs a -> Eff (eff ': effs) a
-lift1 = lift
-{-# INLINE lift1 #-}
 
 -- -----------------------------------------------------------------------------
 
@@ -562,36 +549,72 @@ shift f = Handle \(Registers pid _) -> Eff \_ ->
 
 -- -----------------------------------------------------------------------------
 
--- TODO: Fuse uses of swizzleTargets using RULES.
-class Swizzle effs1 effs2 where
-  swizzleTargets :: Targets -> Targets
-instance {-# INCOHERENT #-} effs1 :<< effs2 => Swizzle effs1 effs2 where
-  swizzleTargets = dropTargets (reifySubIndex @effs1 @effs2)
-  {-# INLINE swizzleTargets #-}
-instance Swizzle '[] effs where
-  swizzleTargets _ = noTargets
-  {-# INLINE swizzleTargets #-}
-instance (eff :< effs2, Swizzle effs1 effs2) => Swizzle (eff ': effs1) effs2 where
-  swizzleTargets ts = pushTarget (lookupTarget @effs2 @eff ts) $! swizzleTargets @effs1 @effs2 ts
+-- TODO: Fuse uses of liftTargets using RULES.
+class Lift effs1 effs2 where
+  liftTargets :: Targets -> Targets
+instance {-# INCOHERENT #-} effs1 :<< effs2 => Lift effs1 effs2 where
+  liftTargets = dropTargets (reifySubIndex @effs1 @effs2)
+  {-# INLINE liftTargets #-}
+instance Lift '[] effs where
+  liftTargets _ = noTargets
+  {-# INLINE liftTargets #-}
+instance (eff :< effs2, Lift effs1 effs2) => Lift (eff ': effs1) effs2 where
+  liftTargets ts = pushTarget (lookupTarget @effs2 @eff ts) $! liftTargets @effs1 @effs2 ts
 
--- | A magician hands you a deck of cards.
+-- | Lifts an 'Eff' computation into one that performs all the same effects, and
+-- possibly more. For example, if you have a computation
 --
--- “Take some cards off the top,” she tells you, “then put them back in any order you like.”
+-- @
+-- m :: 'Eff' '[Foo, Bar] ()
+-- @
 --
--- That’s what 'swizzle' does. If you picture the list of effects @effs@ like a deck of cards,
--- 'swizzle' allows you to rearrange it arbitrarily, so long as all the cards you started with are
--- still /somewhere/ in the deck when you’re finished. In fact, 'swizzle' is even more powerful than
--- that, as you may also add entirely new cards into the deck, as many as you please! You just can’t
--- take any cards out.
+-- then 'lift' will transform it into a polymorphic computation with the
+-- following type:
 --
--- As it happens, the metaphor is apt for more reason than one, because 'swizzle' is slightly
--- magical. Under the hood, it tries its absolute best to figure out what you mean. Usually it does
--- a pretty good job, but sometimes it doesn’t get it quite right, and you may receive a rather
--- mystifying type error. In that case, fear not: all you need to do is offer it a little help by
--- adding some type annotations (or using @TypeApplications@).
-swizzle :: forall effs1 effs2 a. Swizzle effs1 effs2 => Eff effs1 a -> Eff effs2 a
-swizzle = Eff# . parameterizeVM adjustTargets . unEff# where
-  adjustTargets (Registers pid ts) = Registers pid (swizzleTargets @effs1 @effs2 ts)
+-- @
+-- 'lift' m :: (Foo ':<' effs, Bar ':<' effs) => 'Eff' effs ()
+-- @
+--
+-- This type is much more general, and @effs@ can now be instantiated at many
+-- different types. Generally, 'lift' can manipulate the list of effects in any
+-- of the following ways:
+--
+--   * Effects can be reordered.
+--   * New effects can be inserted anywhere in the list.
+--   * Duplicate effects can be collapsed.
+--
+-- More generally, the list of effects doesn’t need to be entirely concrete in
+-- order for 'lift' to work. For example, if you have a computation
+--
+-- @
+-- n :: 'Eff' (Foo ': Bar ':' effs1) ()
+-- @
+--
+-- then @'lift' n@ will have the following type:
+--
+-- @
+-- 'lift' n :: (Foo ':<' effs2, Bar ':<' effs2, effs1 ':<<' effs2) => 'Eff' effs2 ()
+-- @
+--
+-- This type is extremely general, and it allows 'lift' to manipulate the /head/
+-- of the effects list even if the entire list is not completely known.
+--
+-- The 'Lift' typeclass provides some type-level programming machinery to
+-- implement 'lift', but it should be treated as an implementation detail. In
+-- most situations, the machinery should “just work,” but if it doesn’t, the
+-- type errors can be somewhat inscrutable. In those situations, adding some
+-- explicit type annotations (or using @TypeApplications@) can improve the type
+-- errors significantly.
+lift :: forall effs1 effs2 a. Lift effs1 effs2 => Eff effs1 a -> Eff effs2 a
+lift = Eff# . parameterizeVM liftRegisters . unEff# where
+  liftRegisters (Registers pid ts) = Registers pid (liftTargets @effs1 @effs2 ts)
+
+-- | Like 'lift', but restricted to introducing a single additional effect in the result. This is
+-- behaviorally identical to just using 'lift', but the restricted type can produce better type
+-- inference.
+lift1 :: forall eff effs a. Eff effs a -> Eff (eff ': effs) a
+lift1 = lift
+{-# INLINE lift1 #-}
 
 -- -----------------------------------------------------------------------------
 

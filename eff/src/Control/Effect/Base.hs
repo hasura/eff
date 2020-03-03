@@ -10,12 +10,12 @@ module Control.Effect.Base (
   , run
   , lift
   , lift1
-  , swizzle
 
   -- * Defining new effects
   , Effect
-  , (:<)
   , send
+  , (:<)
+  , (:<<)
 
   -- * Handling effects
   -- ** Simple effect handlers
@@ -44,9 +44,9 @@ import Control.Effect.Internal
 -- it may defer to other effects currently in scope.
 --
 -- Most effect handlers should be implemented using 'interpret', possibly with
--- the help of additional 'Error' or 'State' effects. Especially complex
--- handlers can be defined via the more general 'handle', which 'interpret' is
--- defined in terms of:
+-- the help of additional 'Control.Effect.Error.Error' or 'State' effects.
+-- Especially complex handlers can be defined via the more general 'handle',
+-- which 'interpret' is defined in terms of:
 --
 -- @
 -- 'interpret' f = 'handle' ('liftH' '.' f)
