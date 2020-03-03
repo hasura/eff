@@ -54,9 +54,18 @@ library
   hs-source-dirs: src
   exposed-modules:
     Control.Effect
+    Control.Effect.Base
+    Control.Effect.Coroutine
+    Control.Effect.Error
     Control.Effect.Internal
     Control.Effect.Internal.Debug
     Control.Effect.Internal.SmallArray
+    Control.Effect.NonDet
+    Control.Effect.Reader
+    Control.Effect.State
+    Control.Effect.State.Strict
+    Control.Effect.Writer
+    Control.Effect.Writer.Strict
 
 test-suite eff-tests
   import: common

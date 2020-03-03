@@ -617,6 +617,8 @@ instance IOE :< effs => MonadIO (Eff effs) where
 
 -- -----------------------------------------------------------------------------
 
+-- | The @'State' s@ effect provides access to a single cell of mutable state of
+-- type @s@.
 data State s :: Effect where
   Get :: State s m s
   Put :: ~s -> State s m ()
@@ -654,6 +656,11 @@ evalState s0 (Eff m) = Eff \rs -> do
 
 -- -----------------------------------------------------------------------------
 
+-- | The 'NonDet' effect provides so-called /nondeterministic execution/, which
+-- runs all branches of a computation and collects some or all of their results.
+-- Actual execution is not usually truly nondeterministic in the sense that it
+-- is somehow random; rather, 'NonDet' models nondeterministic binary choice by
+-- executing /both/ possibilities rather than choosing just one.
 data NonDet :: Effect where
   Empty :: NonDet m a
   Choose :: NonDet m Bool
