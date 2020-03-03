@@ -9,7 +9,7 @@ import Control.Category ((>>>))
 import Control.Effect.Base
 import Control.Effect.Internal (NonDet(..))
 
--- Handles a 'NonDet' effect, collecting the results of all branches of the
+-- | Handles a 'NonDet' effect, collecting the results of all branches of the
 -- computation. The results are collected __strictly__, which means that /all/
 -- effects are evaluated (even if using an 'Alternative' that ignores subsequent
 -- results, such as 'Maybe').
