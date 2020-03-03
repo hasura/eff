@@ -231,7 +231,7 @@ instance Exception AbortException
 --
 -- When capturing, the included 'PromptId' identifies the prompt to capture up
 -- to. When a more nested prompt receives a 'Capture' request to a parent
--- prompt, it calls 'shiftVM' again to capture up to the next prompt on the
+-- prompt, it calls 'controlVM' again to capture up to the next prompt on the
 -- stack, composes the captured continuation with the continuation captured so
 -- far, and returns a new 'Capture' result. Once the target prompt has been
 -- reached, it invokes the metacontinuation, and execution continues.
@@ -242,7 +242,7 @@ data Result a where
     -- ^ The prompt to capture up to.
     -> ((b -> EVM c) -> EVM c)
     -- ^ The metacontinuation passed by the user to the original call to
-    -- 'shift'. This should be invoked with the fully-composed continuation
+    -- 'control'. This should be invoked with the fully-composed continuation
     -- after capturing is complete.
     -> Continuation b a
     -- ^ The composed continuation captured so far.
@@ -262,17 +262,17 @@ resetVM :: IO (Result a) -> IO (Result a)
 resetVM (IO m) = IO (reset# m)
 {-# INLINE resetVM #-}
 
-shiftVM :: (Continuation a b -> IO (Result b)) -> IO (Registers, a)
-shiftVM f = IO \s1 -> case shift# f# s1 of (# s2, (# rs, a #) #) -> (# s2, (BoxRegisters rs, a) #)
+controlVM :: (Continuation a b -> IO (Result b)) -> IO (Registers, a)
+controlVM f = IO \s1 -> case shift# f# s1 of (# s2, (# rs, a #) #) -> (# s2, (BoxRegisters rs, a) #)
   where f# k# = unIO $ f $ Continuation# \a rs -> k# (\s -> (# s, (# rs, a #) #))
-{-# INLINE shiftVM #-}
+{-# INLINE controlVM #-}
 
 -- TODO: Share some code between `parameterizeVM` and `handle`.
 parameterizeVM :: (Registers -> Registers) -> EVM a -> EVM a
 parameterizeVM adjust (EVM m) = EVM \rs -> do
   resetVM (Return . snd <$> m (adjust rs)) >>= \case
     Return a -> pure (rs, a)
-    Capture target f k1 -> shiftVM \k2 -> pure $! handleCapture target f k1 k2
+    Capture target f k1 -> controlVM \k2 -> pure $! handleCapture target f k1 k2
   where
     handleCapture
       :: PromptId
@@ -402,7 +402,7 @@ run (Eff m) = unsafeDupablePerformIO (snd <$> m initialRegisters)
 --     (used by 'liftH').
 --
 --   * The @i@ parameter is the return type of the handled computation (used by
---     'shift' and 'abort').
+--     'control' and 'abort').
 --
 --   * The @effs'@ parameter is the list of effects in scope at the point of the
 --     originating 'send' call (used by 'locally').
@@ -459,7 +459,7 @@ send !e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) 
 --   * 'abort' — Aborts the computation to the 'handle' call and returns a value
 --     directly. This is usually used to implement exception-like operations.
 --
---   * 'shift' — Captures the current continuation up to the 'handle' call and
+--   * 'control' — Captures the current continuation up to the 'handle' call and
 --     aborts, passing the captured continuation to the handler. This can be
 --     used to implement complex control operators such as coroutines or
 --     resumable exceptions.
@@ -494,7 +494,7 @@ handleVM f (Eff m1) = Eff# (withHandler (fmap (Return . snd) . m1))
       let !rs2@(Registers pid _) = pushPrompt rs1
       resetPrompt rs1 pid (m2 (unboxRegisters rs2)) >>= \case
         Return a -> pure (rs1, a)
-        Capture target g k1 -> shiftVM \k2 -> pure $! handleCaptureElsewhere target g k1 k2
+        Capture target g k1 -> controlVM \k2 -> pure $! handleCaptureElsewhere target g k1 k2
 
     pushPrompt (Registers pid1 ts1) =
       let pid2 = PromptId (unPromptId pid1 + 1)
@@ -543,9 +543,9 @@ liftH (Eff# m) = Handle \(Registers _ ts) ->
 abort :: i -> Handle eff effs i effs' a
 abort a = Handle \(Registers pid _) -> Eff \_ -> IO.throwIO $! AbortException pid (Any a)
 
-shift :: ((a -> Eff effs i) -> Eff effs i) -> Handle eff effs i effs' a
-shift f = Handle \(Registers pid _) -> Eff \_ ->
-  shiftVM \k1 -> pure $! Capture pid (\k2 -> unEff# (f (Eff# . k2))) k1
+control :: ((a -> Eff effs i) -> Eff effs i) -> Handle eff effs i effs' a
+control f = Handle \(Registers pid _) -> Eff \_ ->
+  controlVM \k1 -> pure $! Capture pid (\k2 -> unEff# (f (Eff# . k2))) k1
 
 -- -----------------------------------------------------------------------------
 
@@ -651,7 +651,7 @@ evalState s0 (Eff m) = Eff \rs -> do
   ref <- newIORef s0
   resetVM (Return . snd <$> m (pushHandler ref rs)) >>= \case
     Return a -> pure (rs, a)
-    Capture target f k1 -> shiftVM \k2 -> handleCapture ref target f k1 k2
+    Capture target f k1 -> controlVM \k2 -> handleCapture ref target f k1 k2
   where
     pushHandler :: forall s. IORef s -> Registers -> Registers
     pushHandler ref (Registers pid ts) =

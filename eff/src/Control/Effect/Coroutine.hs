@@ -20,4 +20,4 @@ data Status effs a b c
 
 runCoroutine :: Eff (Coroutine a b ': effs) c -> Eff effs (Status effs a b c)
 runCoroutine = fmap Done >>> handle \case
-  Yield a -> shift \k -> pure $! Yielded a k
+  Yield a -> control \k -> pure $! Yielded a k

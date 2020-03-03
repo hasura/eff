@@ -25,7 +25,7 @@ module Control.Effect.Base (
   , handle
   , liftH
   , abort
-  , shift
+  , control
   , locally
 
   -- * Performing I/O

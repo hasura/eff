@@ -22,4 +22,4 @@ import Control.Effect.Internal (NonDet(..))
 runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
 runNonDetAll = fmap pure >>> handle \case
   Empty -> abort empty
-  Choose -> shift \k -> liftA2 (<|>) (k True) (k False)
+  Choose -> control \k -> liftA2 (<|>) (k True) (k False)
