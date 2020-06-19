@@ -1,0 +1,41 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# LANGUAGE CPP #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Effect.Internal.Debug</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-4"></span><span>
+</span><span id="line-5"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Exception</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">assert</span></span><span class="hs-special">)</span><span class="hs-cpp">
+
+#ifdef EFF_DEBUG
+</span><span class="hs-keyword">import</span><span> </span><span class="hs-identifier">GHC.Stack</span><span> </span><span class="hs-special">(</span><span class="hs-identifier">HasCallStack</span><span class="hs-special">)</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Kind</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-identifier">Constraint</span></span><span class="hs-special">)</span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-13"></span><span class="annot"><a href="Control.Effect.Internal.Debug.html#debugEnabled"><span class="hs-identifier hs-type">debugEnabled</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span class="hs-cpp">
+#ifdef EFF_DEBUG
+</span><span class="hs-identifier">debugEnabled</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">True</span><span class="hs-cpp">
+#else
+</span><span id="debugEnabled"><span class="annot"><span class="annottext">debugEnabled :: Bool
+</span><a href="Control.Effect.Internal.Debug.html#debugEnabled"><span class="hs-identifier hs-var hs-var">debugEnabled</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-cpp">
+#endif
+</span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Control.Effect.Internal.Debug.html#debugEnabled"><span class="hs-pragma hs-type">debugEnabled</span></a></span><span> </span><span class="hs-pragma">#-}</span><span class="hs-cpp">
+
+#ifdef EFF_DEBUG
+</span><span class="hs-keyword">type</span><span> </span><span class="hs-identifier">DebugCallStack</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-identifier">HasCallStack</span><span class="hs-cpp">
+#else
+</span><span class="hs-keyword">type</span><span> </span><span id="DebugCallStack"><span class="annot"><a href="Control.Effect.Internal.Debug.html#DebugCallStack"><span class="hs-identifier hs-var">DebugCallStack</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Constraint</span></span><span class="hs-cpp">
+#endif
+</span><span>
+</span><span id="line-27"></span><span id="local-6989586621679043063"><span class="annot"><a href="Control.Effect.Internal.Debug.html#assertM"><span class="hs-identifier hs-type">assertM</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Internal.Debug.html#DebugCallStack"><span class="hs-identifier hs-type">DebugCallStack</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Applicative</span></span><span> </span><span class="annot"><a href="#local-6989586621679043063"><span class="hs-identifier hs-type">m</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Bool</span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679043063"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-28"></span><span id="assertM"><span class="annot"><span class="annottext">assertM :: Bool -&gt; m ()
+</span><a href="Control.Effect.Internal.Debug.html#assertM"><span class="hs-identifier hs-var hs-var">assertM</span></a></span></span><span> </span><span id="local-6989586621679043061"><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679043061"><span class="hs-identifier hs-var">b</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Bool -&gt; m () -&gt; m ()
+forall a. (?callStack::CallStack) =&gt; Bool -&gt; a -&gt; a
+</span><span class="hs-identifier hs-var hs-var">assert</span></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><a href="#local-6989586621679043061"><span class="hs-identifier hs-var">b</span></a></span><span> </span><span class="annot"><span class="annottext">(m () -&gt; m ()) -&gt; m () -&gt; m ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">() -&gt; m ()
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span><span>
+</span><span id="line-29"></span><span class="hs-pragma">{-# INLINE</span><span> </span><span class="annot"><a href="Control.Effect.Internal.Debug.html#assertM"><span class="hs-pragma hs-type">assertM</span></a></span><span> </span><span class="hs-pragma">#-}</span><span>
+</span><span id="line-30"></span></pre></body></html>

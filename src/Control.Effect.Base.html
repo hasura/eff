@@ -1,0 +1,92 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-pragma">{-# OPTIONS_HADDOCK not-home #-}</span><span>
+</span><span id="line-2"></span><span>
+</span><span id="line-3"></span><span class="hs-comment">-- | This module exports the core functionality @eff@ without any of the</span><span>
+</span><span id="line-4"></span><span class="hs-comment">-- built-in effects or effect handlers. You can import this module if you don&#8217;t</span><span>
+</span><span id="line-5"></span><span class="hs-comment">-- want to import the built-in effects, but otherwise you probably want to</span><span>
+</span><span id="line-6"></span><span class="hs-comment">-- import &quot;Control.Effect&quot; instead.</span><span>
+</span><span id="line-7"></span><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Effect.Base</span><span> </span><span class="hs-special">(</span><span>
+</span><span id="line-8"></span><span>  </span><span class="annot"><span class="hs-comment">-- * The @Eff@ monad</span></span><span>
+</span><span id="line-9"></span><span>    </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier">Eff</span></a></span><span>
+</span><span id="line-10"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#run"><span class="hs-identifier">run</span></a></span><span>
+</span><span id="line-11"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#lift"><span class="hs-identifier">lift</span></a></span><span>
+</span><span id="line-12"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#lift1"><span class="hs-identifier">lift1</span></a></span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Defining new effects</span></span><span>
+</span><span id="line-15"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Effect"><span class="hs-identifier">Effect</span></a></span><span>
+</span><span id="line-16"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#send"><span class="hs-identifier">send</span></a></span><span>
+</span><span id="line-17"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#%3A%3C"><span class="hs-operator">(:&lt;)</span></a></span><span>
+</span><span id="line-18"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#%3A%3C%3C"><span class="hs-operator">(:&lt;&lt;)</span></a></span><span>
+</span><span id="line-19"></span><span>
+</span><span id="line-20"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Handling effects</span></span><span>
+</span><span id="line-21"></span><span>  </span><span class="annot"><span class="hs-comment">-- ** Simple effect handlers</span></span><span>
+</span><span id="line-22"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Base.html#interpret"><span class="hs-identifier">interpret</span></a></span><span>
+</span><span id="line-23"></span><span>  </span><span class="annot"><span class="hs-comment">-- ** Advanced effect handlers</span></span><span>
+</span><span id="line-24"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Handle"><span class="hs-identifier">Handle</span></a></span><span>
+</span><span id="line-25"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#handle"><span class="hs-identifier">handle</span></a></span><span>
+</span><span id="line-26"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#liftH"><span class="hs-identifier">liftH</span></a></span><span>
+</span><span id="line-27"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#abort"><span class="hs-identifier">abort</span></a></span><span>
+</span><span id="line-28"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#control"><span class="hs-identifier">control</span></a></span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#control0"><span class="hs-identifier">control0</span></a></span><span>
+</span><span id="line-30"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#locally"><span class="hs-identifier">locally</span></a></span><span>
+</span><span id="line-31"></span><span>
+</span><span id="line-32"></span><span>  </span><span class="annot"><span class="hs-comment">-- * Performing I/O</span></span><span>
+</span><span id="line-33"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#IOE"><span class="hs-identifier">IOE</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-34"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">MonadIO</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-35"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#runIO"><span class="hs-identifier">runIO</span></a></span><span>
+</span><span id="line-36"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-37"></span><span>
+</span><span id="line-38"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Monad.IO.Class</span></span><span>
+</span><span id="line-39"></span><span>
+</span><span id="line-40"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html"><span class="hs-identifier">Control.Effect.Internal</span></a></span><span>
+</span><span id="line-41"></span><span>
+</span><span id="line-42"></span><span class="hs-comment">-- | The simplest way to handle an effect. Each use of 'send' for the handled</span><span>
+</span><span id="line-43"></span><span class="hs-comment">-- effect dispatches to the handler function, which provides an interpretation</span><span>
+</span><span id="line-44"></span><span class="hs-comment">-- for the operation. The handler function may handle the operation directly, or</span><span>
+</span><span id="line-45"></span><span class="hs-comment">-- it may defer to other effects currently in scope.</span><span>
+</span><span id="line-46"></span><span class="hs-comment">--</span><span>
+</span><span id="line-47"></span><span class="hs-comment">-- Most effect handlers should be implemented using 'interpret', possibly with</span><span>
+</span><span id="line-48"></span><span class="hs-comment">-- the help of additional 'Control.Effect.Error.Error' or 'State' effects.</span><span>
+</span><span id="line-49"></span><span class="hs-comment">-- Especially complex handlers can be defined via the more general 'handle',</span><span>
+</span><span id="line-50"></span><span class="hs-comment">-- which 'interpret' is defined in terms of:</span><span>
+</span><span id="line-51"></span><span class="hs-comment">--</span><span>
+</span><span id="line-52"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-53"></span><span class="hs-comment">-- 'interpret' f = 'handle' ('liftH' '.' f)</span><span>
+</span><span id="line-54"></span><span class="hs-comment">-- @</span><span>
+</span><span id="line-55"></span><span class="annot"><a href="Control.Effect.Base.html#interpret"><span class="hs-identifier hs-type">interpret</span></a></span><span>
+</span><span id="line-56"></span><span>  </span><span class="hs-glyph">::</span><span> </span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044284"><span class="annot"><a href="#local-6989586621679044284"><span class="hs-identifier hs-type">eff</span></a></span></span><span> </span><span id="local-6989586621679044283"><span class="annot"><a href="#local-6989586621679044283"><span class="hs-identifier hs-type">a</span></a></span></span><span> </span><span id="local-6989586621679044282"><span class="annot"><a href="#local-6989586621679044282"><span class="hs-identifier hs-type">effs</span></a></span></span><span>
+</span><span id="line-57"></span><span>   </span><span class="hs-operator">.</span><span> </span><span class="hs-special">(</span><span class="hs-keyword">forall</span><span> </span><span id="local-6989586621679044326"><span class="annot"><a href="#local-6989586621679044326"><span class="hs-identifier hs-type">m</span></a></span></span><span> </span><span id="local-6989586621679044325"><span class="annot"><a href="#local-6989586621679044325"><span class="hs-identifier hs-type">b</span></a></span></span><span class="hs-operator">.</span><span> </span><span class="annot"><a href="#local-6989586621679044284"><span class="hs-identifier hs-type">eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044326"><span class="hs-identifier hs-type">m</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044325"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679044284"><span class="hs-identifier hs-type">eff</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044282"><span class="hs-identifier hs-type">effs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044325"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-58"></span><span>  </span><span class="hs-comment">-- ^ The handler function.</span><span>
+</span><span id="line-59"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679044284"><span class="hs-identifier hs-type">eff</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044282"><span class="hs-identifier hs-type">effs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044283"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-60"></span><span>  </span><span class="hs-comment">-- ^ The action to handle.</span><span>
+</span><span id="line-61"></span><span>  </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044282"><span class="hs-identifier hs-type">effs</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044283"><span class="hs-identifier hs-type">a</span></a></span><span>
+</span><span id="line-62"></span><span id="interpret"><span class="annot"><span class="annottext">interpret :: (forall (m :: * -&gt; *) b. eff m b -&gt; Eff (eff : effs) b)
+-&gt; Eff (eff : effs) a -&gt; Eff effs a
+</span><a href="Control.Effect.Base.html#interpret"><span class="hs-identifier hs-var hs-var">interpret</span></a></span></span><span> </span><span id="local-6989586621679044281"><span class="annot"><span class="annottext">forall (m :: * -&gt; *) b. eff m b -&gt; Eff (eff : effs) b
+</span><a href="#local-6989586621679044281"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; Eff effs a)
+-&gt; (forall (effs' :: [Effect]) b.
+    (eff :&lt; effs') =&gt;
+    eff (Eff effs') b -&gt; Handle eff effs a a effs' b)
+-&gt; Eff (eff : effs) a
+-&gt; Eff effs a
+forall (eff :: Effect) a r (effs :: [Effect]).
+(a -&gt; Eff effs r)
+-&gt; (forall (effs' :: [Effect]) b.
+    (eff :&lt; effs') =&gt;
+    eff (Eff effs') b -&gt; Handle eff effs a r effs' b)
+-&gt; Eff (eff : effs) a
+-&gt; Eff effs r
+</span><a href="Control.Effect.Internal.html#handle"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Eff effs a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Eff (eff : effs) b -&gt; Handle eff effs a a effs' b
+forall (eff :: Effect) (effs :: [Effect]) a i r
+       (effs' :: [Effect]).
+Eff (eff : effs) a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#liftH"><span class="hs-identifier hs-var">liftH</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff (eff : effs) b -&gt; Handle eff effs a a effs' b)
+-&gt; (eff (Eff effs') b -&gt; Eff (eff : effs) b)
+-&gt; eff (Eff effs') b
+-&gt; Handle eff effs a a effs' b
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">eff (Eff effs') b -&gt; Eff (eff : effs) b
+forall (m :: * -&gt; *) b. eff m b -&gt; Eff (eff : effs) b
+</span><a href="#local-6989586621679044281"><span class="hs-identifier hs-var">f</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-63"></span></pre></body></html>

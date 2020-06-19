@@ -1,0 +1,336 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Effect.Writer.Strict</span><span>
+</span><span id="line-2"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="hs-keyword">module</span><span> </span><span class="annot"><a href="Control.Effect.Writer.html"><span class="hs-identifier">Control.Effect.Writer</span></a></span><span>
+</span><span id="line-3"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Writer.Strict.html#runWriter"><span class="hs-identifier">runWriter</span></a></span><span>
+</span><span id="line-4"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Writer.Strict.html#evalWriter"><span class="hs-identifier">evalWriter</span></a></span><span>
+</span><span id="line-5"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.Writer.Strict.html#execWriter"><span class="hs-identifier">execWriter</span></a></span><span>
+</span><span id="line-6"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-7"></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Category</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="hs-operator">(&gt;&gt;&gt;)</span></span><span class="hs-special">)</span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Effect.Base.html"><span class="hs-identifier">Control.Effect.Base</span></a></span><span>
+</span><span id="line-10"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Effect.State.Strict.html"><span class="hs-identifier">Control.Effect.State.Strict</span></a></span><span>
+</span><span id="line-11"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Effect.Writer.html"><span class="hs-identifier">Control.Effect.Writer</span></a></span><span>
+</span><span id="line-12"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Data.Function</span></span><span>
+</span><span id="line-13"></span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- | Handles a @'Writer'@ effect, strictly accumulating the monoidal state.</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- Note that the state will be accumulated via __left-associated__ uses of '&lt;&gt;'.</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- This is necessary to be strict, but it can be catastrophically slow on</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- certain monoids, most notably @[]@. To avoid pathological performance, use a</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- data structure that supports efficient appends, such as @Data.Sequence.Seq@,</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- or use 'Data.Semigroup.Dual' to flip the argument order of '&lt;&gt;' (but beware</span><span>
+</span><span id="line-21"></span><span class="hs-comment">-- that this will cause the elements to be accumulated in reverse order).</span><span>
+</span><span id="line-22"></span><span id="local-6989586621679044796"><span id="local-6989586621679044797"><span id="local-6989586621679044798"><span class="annot"><a href="Control.Effect.Writer.Strict.html#runWriter"><span class="hs-identifier hs-type">runWriter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621679044798"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044798"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044797"><span class="hs-identifier hs-type">effs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044796"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044797"><span class="hs-identifier hs-type">effs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679044798"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679044796"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-23"></span><span id="runWriter"><span class="annot"><span class="annottext">runWriter :: Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+</span><a href="Control.Effect.Writer.Strict.html#runWriter"><span class="hs-identifier hs-var hs-var">runWriter</span></a></span></span><span> </span><span class="hs-special">(</span><span id="local-6989586621679044784"><span id="local-6989586621679044785"><span id="local-6989586621679044786"><span id="local-6989586621679044783"><span class="annot"><span class="annottext">Eff (Writer w : effs) a
+</span><a href="#local-6989586621679044783"><span class="hs-identifier hs-var">m0</span></a></span></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044785"><span class="hs-identifier hs-type">effs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044784"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a -&gt; Eff (Writer w : State w : effs) a
+forall (effs1 :: [(* -&gt; *) -&gt; * -&gt; *])
+       (effs2 :: [(* -&gt; *) -&gt; * -&gt; *]) a.
+Lift effs1 effs2 =&gt;
+Eff effs1 a -&gt; Eff effs2 a
+</span><a href="Control.Effect.Internal.html#lift"><span class="hs-identifier hs-var">lift</span></a></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a
+</span><a href="#local-6989586621679044783"><span class="hs-identifier hs-var">m0</span></a></span><span>
+</span><span id="line-24"></span><span>  </span><span class="annot"><span class="annottext">Eff (Writer w : State w : effs) a
+-&gt; (Eff (Writer w : State w : effs) a -&gt; Eff (State w : effs) a)
+-&gt; Eff (State w : effs) a
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">(a -&gt; Eff (State w : effs) a)
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (Writer w :&lt; effs') =&gt;
+    Writer w (Eff effs') b
+    -&gt; Handle (Writer w) (State w : effs) a a effs' b)
+-&gt; Eff (Writer w : State w : effs) a
+-&gt; Eff (State w : effs) a
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) a r
+       (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(a -&gt; Eff effs r)
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (eff :&lt; effs') =&gt;
+    eff (Eff effs') b -&gt; Handle eff effs a r effs' b)
+-&gt; Eff (eff : effs) a
+-&gt; Eff effs r
+</span><a href="Control.Effect.Internal.html#handle"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="annot"><span class="annottext">a -&gt; Eff (State w : effs) a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-25"></span><span>      </span><span class="annot"><a href="Control.Effect.Writer.html#Tell"><span class="hs-identifier hs-type">Tell</span></a></span><span> </span><span id="local-6989586621679044778"><span class="annot"><a href="#local-6989586621679044778"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : State w : effs) ()
+-&gt; Handle (Writer w) (State w : effs) a a effs' ()
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       i r (effs' :: [(* -&gt; *) -&gt; * -&gt; *]).
+Eff (eff : effs) a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#liftH"><span class="hs-identifier hs-var">liftH</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff (Writer w : State w : effs) ()
+ -&gt; Handle (Writer w) (State w : effs) a a effs' ())
+-&gt; Eff (Writer w : State w : effs) ()
+-&gt; Handle (Writer w) (State w : effs) a a effs' ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">w -&gt; Eff (Writer w : State w : effs) ()
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]).
+(State w :&lt; effs') =&gt;
+w -&gt; Eff effs' ()
+</span><a href="#local-6989586621679044776"><span class="hs-identifier hs-var">tellS</span></a></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044778"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-26"></span><span>      </span><span class="annot"><a href="Control.Effect.Writer.html#Listen"><span class="hs-identifier hs-type">Listen</span></a></span><span> </span><span id="local-6989586621679044774"><span class="annot"><a href="#local-6989586621679044774"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff effs (w, a)
+-&gt; Handle (Writer w) (State w : effs) a a effs (w, a)
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) i r.
+Eff effs' a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#locally"><span class="hs-identifier hs-var">locally</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff effs (w, a)
+ -&gt; Handle (Writer w) (State w : effs) a a effs (w, a))
+-&gt; Eff effs (w, a)
+-&gt; Handle (Writer w) (State w : effs) a a effs (w, a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+(Writer w :&lt; effs') =&gt;
+Eff (Writer w : effs') b -&gt; Eff effs' (w, b)
+</span><a href="#local-6989586621679044772"><span class="hs-identifier hs-var">runListen</span></a></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a
+</span><a href="#local-6989586621679044774"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-27"></span><span>      </span><span class="annot"><a href="Control.Effect.Writer.html#Censor"><span class="hs-identifier hs-type">Censor</span></a></span><span> </span><span id="local-6989586621679044770"><span class="annot"><a href="#local-6989586621679044770"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044769"><span class="annot"><a href="#local-6989586621679044769"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff effs b -&gt; Handle (Writer w) (State w : effs) a a effs b
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) i r.
+Eff effs' a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#locally"><span class="hs-identifier hs-var">locally</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff effs b -&gt; Handle (Writer w) (State w : effs) a a effs b)
+-&gt; Eff effs b -&gt; Handle (Writer w) (State w : effs) a a effs b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(w -&gt; w) -&gt; Eff (Writer w : effs) b -&gt; Eff effs b
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+(Writer w :&lt; effs') =&gt;
+(w -&gt; w) -&gt; Eff (Writer w : effs') b -&gt; Eff effs' b
+</span><a href="#local-6989586621679044768"><span class="hs-identifier hs-var">runCensor</span></a></span><span> </span><span class="annot"><span class="annottext">w -&gt; w
+</span><a href="#local-6989586621679044770"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) b
+</span><a href="#local-6989586621679044769"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-28"></span><span>  </span><span class="annot"><span class="annottext">Eff (State w : effs) a
+-&gt; (Eff (State w : effs) a -&gt; Eff effs (w, a)) -&gt; Eff effs (w, a)
+forall a b. a -&gt; (a -&gt; b) -&gt; b
+</span><span class="hs-operator hs-var">&amp;</span></span><span> </span><span class="annot"><span class="annottext">w -&gt; Eff (State w : effs) a -&gt; Eff effs (w, a)
+forall s (effs :: [(* -&gt; *) -&gt; * -&gt; *]) a.
+s -&gt; Eff (State s : effs) a -&gt; Eff effs (s, a)
+</span><a href="Control.Effect.State.Strict.html#runState"><span class="hs-identifier hs-var">runState</span></a></span><span> </span><span class="annot"><span class="annottext">w
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-29"></span><span>  </span><span class="hs-keyword">where</span><span>
+</span><span id="line-30"></span><span>    </span><span id="local-6989586621679044861"><span class="annot"><a href="#local-6989586621679044776"><span class="hs-identifier hs-type">tellS</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#State"><span class="hs-identifier hs-type">State</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#%3A%3C"><span class="hs-operator hs-type">:&lt;</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044861"><span class="hs-identifier hs-type">effs'</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044861"><span class="hs-identifier hs-type">effs'</span></a></span><span> </span><span class="hs-special">(</span><span class="hs-special">)</span></span><span>
+</span><span id="line-31"></span><span>    </span><span id="local-6989586621679044776"><span class="annot"><span class="annottext">tellS :: w -&gt; Eff effs' ()
+</span><a href="#local-6989586621679044776"><span class="hs-identifier hs-var hs-var">tellS</span></a></span></span><span> </span><span id="local-6989586621679044766"><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044766"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Eff effs' w
+forall s (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(State s :&lt; effs) =&gt;
+Eff effs s
+</span><a href="Control.Effect.State.html#get"><span class="hs-identifier hs-var">get</span></a></span><span> </span><span class="annot"><span class="annottext">Eff effs' w -&gt; (w -&gt; Eff effs' ()) -&gt; Eff effs' ()
+forall (m :: * -&gt; *) a b. Monad m =&gt; m a -&gt; (a -&gt; m b) -&gt; m b
+</span><span class="hs-operator hs-var">&gt;&gt;=</span></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679044764"><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044764"><span class="hs-identifier hs-var">ws</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">w -&gt; Eff effs' ()
+forall s (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(State s :&lt; effs) =&gt;
+s -&gt; Eff effs ()
+</span><a href="Control.Effect.State.html#put"><span class="hs-identifier hs-var">put</span></a></span><span> </span><span class="annot"><span class="annottext">(w -&gt; Eff effs' ()) -&gt; w -&gt; Eff effs' ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044764"><span class="hs-identifier hs-var">ws</span></a></span><span> </span><span class="annot"><span class="annottext">w -&gt; w -&gt; w
+forall a. Semigroup a =&gt; a -&gt; a -&gt; a
+</span><span class="hs-operator hs-var">&lt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044766"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-32"></span><span>
+</span><span id="line-33"></span><span>    </span><span id="local-6989586621679044851"><span id="local-6989586621679044852"><span class="annot"><a href="#local-6989586621679044772"><span class="hs-identifier hs-type">runListen</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#%3A%3C"><span class="hs-operator hs-type">:&lt;</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044852"><span class="hs-identifier hs-type">effs'</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044852"><span class="hs-identifier hs-type">effs'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044851"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044852"><span class="hs-identifier hs-type">effs'</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">,</span><span> </span><span class="annot"><a href="#local-6989586621679044851"><span class="hs-identifier hs-type">b</span></a></span><span class="hs-special">)</span></span></span><span>
+</span><span id="line-34"></span><span>    </span><span id="local-6989586621679044772"><span class="annot"><span class="annottext">runListen :: Eff (Writer w : effs') b -&gt; Eff effs' (w, b)
+</span><a href="#local-6989586621679044772"><span class="hs-identifier hs-var hs-var">runListen</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs') b -&gt; Eff (Writer w : State w : effs') b
+forall (effs1 :: [(* -&gt; *) -&gt; * -&gt; *])
+       (effs2 :: [(* -&gt; *) -&gt; * -&gt; *]) a.
+Lift effs1 effs2 =&gt;
+Eff effs1 a -&gt; Eff effs2 a
+</span><a href="Control.Effect.Internal.html#lift"><span class="hs-identifier hs-var">lift</span></a></span><span>
+</span><span id="line-35"></span><span>      </span><span class="annot"><span class="annottext">(Eff (Writer w : effs') b -&gt; Eff (Writer w : State w : effs') b)
+-&gt; (Eff (Writer w : State w : effs') b -&gt; Eff effs' (w, b))
+-&gt; Eff (Writer w : effs') b
+-&gt; Eff effs' (w, b)
+forall {k} (cat :: k -&gt; k -&gt; *) (a :: k) (b :: k) (c :: k).
+Category cat =&gt;
+cat a b -&gt; cat b c -&gt; cat a c
+</span><span class="hs-operator hs-var">&gt;&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">(b -&gt; Eff (State w : effs') b)
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (Writer w :&lt; effs') =&gt;
+    Writer w (Eff effs') b
+    -&gt; Handle (Writer w) (State w : effs') b b effs' b)
+-&gt; Eff (Writer w : State w : effs') b
+-&gt; Eff (State w : effs') b
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) a r
+       (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(a -&gt; Eff effs r)
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (eff :&lt; effs') =&gt;
+    eff (Eff effs') b -&gt; Handle eff effs a r effs' b)
+-&gt; Eff (eff : effs) a
+-&gt; Eff effs r
+</span><a href="Control.Effect.Internal.html#handle"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="annot"><span class="annottext">b -&gt; Eff (State w : effs') b
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-36"></span><span>            </span><span class="annot"><a href="Control.Effect.Writer.html#Tell"><span class="hs-identifier hs-type">Tell</span></a></span><span> </span><span id="local-6989586621679044761"><span class="annot"><a href="#local-6989586621679044761"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : State w : effs') ()
+-&gt; Handle (Writer w) (State w : effs') b b effs' ()
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       i r (effs' :: [(* -&gt; *) -&gt; * -&gt; *]).
+Eff (eff : effs) a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#liftH"><span class="hs-identifier hs-var">liftH</span></a></span><span> </span><span class="hs-keyword">do</span><span>
+</span><span id="line-37"></span><span>              </span><span class="annot"><span class="annottext">w -&gt; Eff (Writer w : State w : effs') ()
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]).
+(State w :&lt; effs') =&gt;
+w -&gt; Eff effs' ()
+</span><a href="#local-6989586621679044776"><span class="hs-identifier hs-var">tellS</span></a></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044761"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-38"></span><span>              </span><span class="annot"><span class="annottext">Eff (State w : effs') () -&gt; Eff (Writer w : State w : effs') ()
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *])
+       a.
+Eff effs a -&gt; Eff (eff : effs) a
+</span><a href="Control.Effect.Internal.html#lift1"><span class="hs-identifier hs-var">lift1</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff (State w : effs') () -&gt; Eff (Writer w : State w : effs') ())
+-&gt; Eff (State w : effs') () -&gt; Eff (Writer w : State w : effs') ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">w -&gt; Eff (State w : effs') ()
+forall w (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(Writer w :&lt; effs) =&gt;
+w -&gt; Eff effs ()
+</span><a href="Control.Effect.Writer.html#tell"><span class="hs-identifier hs-var">tell</span></a></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044761"><span class="hs-identifier hs-var">w</span></a></span><span>
+</span><span id="line-39"></span><span>            </span><span class="annot"><a href="Control.Effect.Writer.html#Listen"><span class="hs-identifier hs-type">Listen</span></a></span><span> </span><span id="local-6989586621679044758"><span class="annot"><a href="#local-6989586621679044758"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff effs (w, a)
+-&gt; Handle (Writer w) (State w : effs') b b effs (w, a)
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) i r.
+Eff effs' a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#locally"><span class="hs-identifier hs-var">locally</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff effs (w, a)
+ -&gt; Handle (Writer w) (State w : effs') b b effs (w, a))
+-&gt; Eff effs (w, a)
+-&gt; Handle (Writer w) (State w : effs') b b effs (w, a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+(Writer w :&lt; effs') =&gt;
+Eff (Writer w : effs') b -&gt; Eff effs' (w, b)
+</span><a href="#local-6989586621679044772"><span class="hs-identifier hs-var">runListen</span></a></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a
+</span><a href="#local-6989586621679044758"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-40"></span><span>            </span><span class="annot"><a href="Control.Effect.Writer.html#Censor"><span class="hs-identifier hs-type">Censor</span></a></span><span> </span><span id="local-6989586621679044757"><span class="annot"><a href="#local-6989586621679044757"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span id="local-6989586621679044756"><span class="annot"><a href="#local-6989586621679044756"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff effs b -&gt; Handle (Writer w) (State w : effs') b b effs b
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) i r.
+Eff effs' a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#locally"><span class="hs-identifier hs-var">locally</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff effs b -&gt; Handle (Writer w) (State w : effs') b b effs b)
+-&gt; Eff effs b -&gt; Handle (Writer w) (State w : effs') b b effs b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(w -&gt; w) -&gt; Eff (Writer w : effs) b -&gt; Eff effs b
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+(Writer w :&lt; effs') =&gt;
+(w -&gt; w) -&gt; Eff (Writer w : effs') b -&gt; Eff effs' b
+</span><a href="#local-6989586621679044768"><span class="hs-identifier hs-var">runCensor</span></a></span><span> </span><span class="annot"><span class="annottext">w -&gt; w
+</span><a href="#local-6989586621679044757"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) b
+</span><a href="#local-6989586621679044756"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-41"></span><span>      </span><span class="annot"><span class="annottext">(Eff (Writer w : State w : effs') b -&gt; Eff (State w : effs') b)
+-&gt; (Eff (State w : effs') b -&gt; Eff effs' (w, b))
+-&gt; Eff (Writer w : State w : effs') b
+-&gt; Eff effs' (w, b)
+forall {k} (cat :: k -&gt; k -&gt; *) (a :: k) (b :: k) (c :: k).
+Category cat =&gt;
+cat a b -&gt; cat b c -&gt; cat a c
+</span><span class="hs-operator hs-var">&gt;&gt;&gt;</span></span><span> </span><span class="annot"><span class="annottext">w -&gt; Eff (State w : effs') b -&gt; Eff effs' (w, b)
+forall s (effs :: [(* -&gt; *) -&gt; * -&gt; *]) a.
+s -&gt; Eff (State s : effs) a -&gt; Eff effs (s, a)
+</span><a href="Control.Effect.State.Strict.html#runState"><span class="hs-identifier hs-var">runState</span></a></span><span> </span><span class="annot"><span class="annottext">w
+forall a. Monoid a =&gt; a
+</span><span class="hs-identifier hs-var">mempty</span></span><span>
+</span><span id="line-42"></span><span>
+</span><span id="line-43"></span><span>    </span><span id="local-6989586621679044848"><span id="local-6989586621679044849"><span class="annot"><a href="#local-6989586621679044768"><span class="hs-identifier hs-type">runCensor</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#%3A%3C"><span class="hs-operator hs-type">:&lt;</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044849"><span class="hs-identifier hs-type">effs'</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044786"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044849"><span class="hs-identifier hs-type">effs'</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044848"><span class="hs-identifier hs-type">b</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044849"><span class="hs-identifier hs-type">effs'</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044848"><span class="hs-identifier hs-type">b</span></a></span></span></span><span>
+</span><span id="line-44"></span><span>    </span><span id="local-6989586621679044768"><span class="annot"><span class="annottext">runCensor :: (w -&gt; w) -&gt; Eff (Writer w : effs') b -&gt; Eff effs' b
+</span><a href="#local-6989586621679044768"><span class="hs-identifier hs-var hs-var">runCensor</span></a></span></span><span> </span><span id="local-6989586621679044755"><span class="annot"><span class="annottext">w -&gt; w
+</span><a href="#local-6989586621679044755"><span class="hs-identifier hs-var">f</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(b -&gt; Eff effs' b)
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (Writer w :&lt; effs') =&gt;
+    Writer w (Eff effs') b -&gt; Handle (Writer w) effs' b b effs' b)
+-&gt; Eff (Writer w : effs') b
+-&gt; Eff effs' b
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) a r
+       (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(a -&gt; Eff effs r)
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (eff :&lt; effs') =&gt;
+    eff (Eff effs') b -&gt; Handle eff effs a r effs' b)
+-&gt; Eff (eff : effs) a
+-&gt; Eff effs r
+</span><a href="Control.Effect.Internal.html#handle"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="annot"><span class="annottext">b -&gt; Eff effs' b
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-45"></span><span>      </span><span class="annot"><a href="Control.Effect.Writer.html#Tell"><span class="hs-identifier hs-type">Tell</span></a></span><span> </span><span id="local-6989586621679044754"><span class="annot"><a href="#local-6989586621679044754"><span class="hs-identifier hs-var">w</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs') () -&gt; Handle (Writer w) effs' b b effs' ()
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       i r (effs' :: [(* -&gt; *) -&gt; * -&gt; *]).
+Eff (eff : effs) a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#liftH"><span class="hs-identifier hs-var">liftH</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff (Writer w : effs') () -&gt; Handle (Writer w) effs' b b effs' ())
+-&gt; Eff (Writer w : effs') ()
+-&gt; Handle (Writer w) effs' b b effs' ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Eff effs' () -&gt; Eff (Writer w : effs') ()
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *])
+       a.
+Eff effs a -&gt; Eff (eff : effs) a
+</span><a href="Control.Effect.Internal.html#lift1"><span class="hs-identifier hs-var">lift1</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">w -&gt; Eff effs' ()
+forall w (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(Writer w :&lt; effs) =&gt;
+w -&gt; Eff effs ()
+</span><a href="Control.Effect.Writer.html#tell"><span class="hs-identifier hs-var">tell</span></a></span><span> </span><span class="annot"><span class="annottext">(w -&gt; Eff effs' ()) -&gt; w -&gt; Eff effs' ()
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$!</span></span><span> </span><span class="annot"><span class="annottext">w -&gt; w
+</span><a href="#local-6989586621679044755"><span class="hs-identifier hs-var">f</span></a></span><span> </span><span class="annot"><span class="annottext">w
+</span><a href="#local-6989586621679044754"><span class="hs-identifier hs-var">w</span></a></span><span class="hs-special">)</span><span>
+</span><span id="line-46"></span><span>      </span><span class="annot"><a href="Control.Effect.Writer.html#Listen"><span class="hs-identifier hs-type">Listen</span></a></span><span> </span><span id="local-6989586621679044753"><span class="annot"><a href="#local-6989586621679044753"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff effs (w, a) -&gt; Handle (Writer w) effs' b b effs (w, a)
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) i r.
+Eff effs' a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#locally"><span class="hs-identifier hs-var">locally</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff effs (w, a) -&gt; Handle (Writer w) effs' b b effs (w, a))
+-&gt; Eff effs (w, a) -&gt; Handle (Writer w) effs' b b effs (w, a)
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+(Writer w :&lt; effs') =&gt;
+Eff (Writer w : effs') b -&gt; Eff effs' (w, b)
+</span><a href="#local-6989586621679044772"><span class="hs-identifier hs-var">runListen</span></a></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a
+</span><a href="#local-6989586621679044753"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-47"></span><span>      </span><span class="annot"><a href="Control.Effect.Writer.html#Censor"><span class="hs-identifier hs-type">Censor</span></a></span><span> </span><span id="local-6989586621679044752"><span class="annot"><a href="#local-6989586621679044752"><span class="hs-identifier hs-var">g</span></a></span></span><span> </span><span id="local-6989586621679044751"><span class="annot"><a href="#local-6989586621679044751"><span class="hs-identifier hs-var">m</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">Eff effs b -&gt; Handle (Writer w) effs' b b effs b
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) a
+       (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *]) i r.
+Eff effs' a -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#locally"><span class="hs-identifier hs-var">locally</span></a></span><span> </span><span class="annot"><span class="annottext">(Eff effs b -&gt; Handle (Writer w) effs' b b effs b)
+-&gt; Eff effs b -&gt; Handle (Writer w) effs' b b effs b
+forall a b. (a -&gt; b) -&gt; a -&gt; b
+</span><span class="hs-operator hs-var">$</span></span><span> </span><span class="annot"><span class="annottext">(w -&gt; w) -&gt; Eff (Writer w : effs) b -&gt; Eff effs b
+forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+(Writer w :&lt; effs') =&gt;
+(w -&gt; w) -&gt; Eff (Writer w : effs') b -&gt; Eff effs' b
+</span><a href="#local-6989586621679044768"><span class="hs-identifier hs-var">runCensor</span></a></span><span> </span><span class="annot"><span class="annottext">w -&gt; w
+</span><a href="#local-6989586621679044752"><span class="hs-identifier hs-var">g</span></a></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) b
+</span><a href="#local-6989586621679044751"><span class="hs-identifier hs-var">m</span></a></span><span>
+</span><span id="line-48"></span><span>
+</span><span id="line-49"></span><span id="local-6989586621679044748"><span id="local-6989586621679044749"><span id="local-6989586621679044750"><span class="annot"><a href="Control.Effect.Writer.Strict.html#evalWriter"><span class="hs-identifier hs-type">evalWriter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621679044750"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044750"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044749"><span class="hs-identifier hs-type">effs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044748"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044749"><span class="hs-identifier hs-type">effs</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044748"><span class="hs-identifier hs-type">a</span></a></span></span></span></span><span>
+</span><span id="line-50"></span><span id="evalWriter"><span class="annot"><span class="annottext">evalWriter :: Eff (Writer w : effs) a -&gt; Eff effs a
+</span><a href="Control.Effect.Writer.Strict.html#evalWriter"><span class="hs-identifier hs-var hs-var">evalWriter</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((w, a) -&gt; a) -&gt; Eff effs (w, a) -&gt; Eff effs a
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">(w, a) -&gt; a
+forall a b. (a, b) -&gt; b
+</span><span class="hs-identifier hs-var">snd</span></span><span> </span><span class="annot"><span class="annottext">(Eff effs (w, a) -&gt; Eff effs a)
+-&gt; (Eff (Writer w : effs) a -&gt; Eff effs (w, a))
+-&gt; Eff (Writer w : effs) a
+-&gt; Eff effs a
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+forall w (effs :: [(* -&gt; *) -&gt; * -&gt; *]) a.
+Monoid w =&gt;
+Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+</span><a href="Control.Effect.Writer.Strict.html#runWriter"><span class="hs-identifier hs-var">runWriter</span></a></span><span>
+</span><span id="line-51"></span><span>
+</span><span id="line-52"></span><span id="local-6989586621679044744"><span id="local-6989586621679044745"><span id="local-6989586621679044746"><span class="annot"><a href="Control.Effect.Writer.Strict.html#execWriter"><span class="hs-identifier hs-type">execWriter</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Monoid</span></span><span> </span><span class="annot"><a href="#local-6989586621679044746"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Writer.html#Writer"><span class="hs-identifier hs-type">Writer</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044746"><span class="hs-identifier hs-type">w</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044745"><span class="hs-identifier hs-type">effs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044744"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044745"><span class="hs-identifier hs-type">effs</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044746"><span class="hs-identifier hs-type">w</span></a></span></span></span></span><span>
+</span><span id="line-53"></span><span id="execWriter"><span class="annot"><span class="annottext">execWriter :: Eff (Writer w : effs) a -&gt; Eff effs w
+</span><a href="Control.Effect.Writer.Strict.html#execWriter"><span class="hs-identifier hs-var hs-var">execWriter</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">((w, a) -&gt; w) -&gt; Eff effs (w, a) -&gt; Eff effs w
+forall (f :: * -&gt; *) a b. Functor f =&gt; (a -&gt; b) -&gt; f a -&gt; f b
+</span><span class="hs-identifier hs-var">fmap</span></span><span> </span><span class="annot"><span class="annottext">(w, a) -&gt; w
+forall a b. (a, b) -&gt; a
+</span><span class="hs-identifier hs-var">fst</span></span><span> </span><span class="annot"><span class="annottext">(Eff effs (w, a) -&gt; Eff effs w)
+-&gt; (Eff (Writer w : effs) a -&gt; Eff effs (w, a))
+-&gt; Eff (Writer w : effs) a
+-&gt; Eff effs w
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+forall w (effs :: [(* -&gt; *) -&gt; * -&gt; *]) a.
+Monoid w =&gt;
+Eff (Writer w : effs) a -&gt; Eff effs (w, a)
+</span><a href="Control.Effect.Writer.Strict.html#runWriter"><span class="hs-identifier hs-var">runWriter</span></a></span><span>
+</span><span id="line-54"></span></pre></body></html>

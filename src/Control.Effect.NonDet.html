@@ -1,0 +1,71 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><html xmlns="http://www.w3.org/1999/xhtml"><head><link rel="stylesheet" type="text/css" href="style.css" /><script type="text/javascript" src="highlight.js"></script></head><body><pre><span class="hs-keyword">module</span><span> </span><span class="hs-identifier">Control.Effect.NonDet</span><span>
+</span><span id="line-2"></span><span>  </span><span class="hs-special">(</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#NonDet"><span class="hs-identifier">NonDet</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-3"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><span class="hs-identifier">Alternative</span></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span>
+</span><span id="line-4"></span><span>  </span><span class="hs-special">,</span><span> </span><span class="annot"><a href="Control.Effect.NonDet.html#runNonDetAll"><span class="hs-identifier">runNonDetAll</span></a></span><span>
+</span><span id="line-5"></span><span>  </span><span class="hs-special">)</span><span> </span><span class="hs-keyword">where</span><span>
+</span><span id="line-6"></span><span>
+</span><span id="line-7"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><span class="hs-identifier">Control.Applicative</span></span><span>
+</span><span id="line-8"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Effect.Base.html"><span class="hs-identifier">Control.Effect.Base</span></a></span><span>
+</span><span id="line-9"></span><span class="hs-keyword">import</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html"><span class="hs-identifier">Control.Effect.Internal</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Internal.html#NonDet"><span class="hs-identifier">NonDet</span></a></span><span class="hs-special">(</span><span class="hs-glyph">..</span><span class="hs-special">)</span><span class="hs-special">)</span><span>
+</span><span id="line-10"></span><span>
+</span><span id="line-11"></span><span class="hs-comment">-- | Handles a 'NonDet' effect, collecting the results of all branches of the</span><span>
+</span><span id="line-12"></span><span class="hs-comment">-- computation. The results are collected __strictly__, which means that /all/</span><span>
+</span><span id="line-13"></span><span class="hs-comment">-- effects are evaluated (even if using an 'Alternative' that ignores subsequent</span><span>
+</span><span id="line-14"></span><span class="hs-comment">-- results, such as 'Maybe').</span><span>
+</span><span id="line-15"></span><span class="hs-comment">--</span><span>
+</span><span id="line-16"></span><span class="hs-comment">-- The result is also built using a __left-associated__ sequence of '&lt;|&gt;' calls,</span><span>
+</span><span id="line-17"></span><span class="hs-comment">-- which allows the result to be constructed in constant space if an appropriate</span><span>
+</span><span id="line-18"></span><span class="hs-comment">-- 'Alternative' instance is used, but can lead to very poor performance for</span><span>
+</span><span id="line-19"></span><span class="hs-comment">-- types with inefficient append operations, such as @[]@. Consider using a data</span><span>
+</span><span id="line-20"></span><span class="hs-comment">-- structure that supports efficient appends, such as @Data.Sequence.Seq@.</span><span>
+</span><span id="line-21"></span><span id="local-6989586621679044494"><span id="local-6989586621679044495"><span id="local-6989586621679044496"><span class="annot"><a href="Control.Effect.NonDet.html#runNonDetAll"><span class="hs-identifier hs-type">runNonDetAll</span></a></span><span> </span><span class="hs-glyph">::</span><span> </span><span class="annot"><span class="hs-identifier hs-type">Alternative</span></span><span> </span><span class="annot"><a href="#local-6989586621679044496"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="hs-glyph">=&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="Control.Effect.Internal.html#NonDet"><span class="hs-identifier hs-type">NonDet</span></a></span><span> </span><span class="hs-special">'</span><span class="hs-glyph">:</span><span> </span><span class="annot"><a href="#local-6989586621679044495"><span class="hs-identifier hs-type">effs</span></a></span><span class="hs-special">)</span><span> </span><span class="annot"><a href="#local-6989586621679044494"><span class="hs-identifier hs-type">a</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><a href="Control.Effect.Internal.html#Eff"><span class="hs-identifier hs-type">Eff</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044495"><span class="hs-identifier hs-type">effs</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><a href="#local-6989586621679044496"><span class="hs-identifier hs-type">f</span></a></span><span> </span><span class="annot"><a href="#local-6989586621679044494"><span class="hs-identifier hs-type">a</span></a></span><span class="hs-special">)</span></span></span></span><span>
+</span><span id="line-22"></span><span id="runNonDetAll"><span class="annot"><span class="annottext">runNonDetAll :: Eff (NonDet : effs) a -&gt; Eff effs (f a)
+</span><a href="Control.Effect.NonDet.html#runNonDetAll"><span class="hs-identifier hs-var hs-var">runNonDetAll</span></a></span></span><span> </span><span class="hs-glyph">=</span><span> </span><span class="annot"><span class="annottext">(a -&gt; Eff effs (f a))
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (NonDet :&lt; effs') =&gt;
+    NonDet (Eff effs') b -&gt; Handle NonDet effs a (f a) effs' b)
+-&gt; Eff (NonDet : effs) a
+-&gt; Eff effs (f a)
+forall (eff :: (* -&gt; *) -&gt; * -&gt; *) a r
+       (effs :: [(* -&gt; *) -&gt; * -&gt; *]).
+(a -&gt; Eff effs r)
+-&gt; (forall (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) b.
+    (eff :&lt; effs') =&gt;
+    eff (Eff effs') b -&gt; Handle eff effs a r effs' b)
+-&gt; Eff (eff : effs) a
+-&gt; Eff effs r
+</span><a href="Control.Effect.Internal.html#handle"><span class="hs-identifier hs-var">handle</span></a></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">f a -&gt; Eff effs (f a)
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span> </span><span class="annot"><span class="annottext">(f a -&gt; Eff effs (f a)) -&gt; (a -&gt; f a) -&gt; a -&gt; Eff effs (f a)
+forall b c a. (b -&gt; c) -&gt; (a -&gt; b) -&gt; a -&gt; c
+</span><span class="hs-operator hs-var">.</span></span><span> </span><span class="annot"><span class="annottext">a -&gt; f a
+forall (f :: * -&gt; *) a. Applicative f =&gt; a -&gt; f a
+</span><span class="hs-identifier hs-var">pure</span></span><span class="hs-special">)</span><span> </span><span class="hs-glyph">\</span><span class="hs-glyph">case</span><span>
+</span><span id="line-23"></span><span>  </span><span class="annot"><span class="annottext">NonDet (Eff effs') b
+</span><a href="Control.Effect.Internal.html#Empty"><span class="hs-identifier hs-var">Empty</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">f a -&gt; Handle NonDet effs a (f a) effs' b
+forall r (eff :: (* -&gt; *) -&gt; * -&gt; *) (effs :: [(* -&gt; *) -&gt; * -&gt; *])
+       i (effs' :: [(* -&gt; *) -&gt; * -&gt; *]) a.
+r -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#abort"><span class="hs-identifier hs-var">abort</span></a></span><span> </span><span class="annot"><span class="annottext">f a
+forall (f :: * -&gt; *) a. Alternative f =&gt; f a
+</span><span class="hs-identifier hs-var">empty</span></span><span>
+</span><span id="line-24"></span><span>  </span><span class="annot"><span class="annottext">NonDet (Eff effs') b
+</span><a href="Control.Effect.Internal.html#Choose"><span class="hs-identifier hs-var">Choose</span></a></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">((Bool -&gt; Eff effs (f a)) -&gt; Eff effs (f a))
+-&gt; Handle NonDet effs a (f a) effs' Bool
+forall a (effs :: [(* -&gt; *) -&gt; * -&gt; *]) r
+       (eff :: (* -&gt; *) -&gt; * -&gt; *) i (effs' :: [(* -&gt; *) -&gt; * -&gt; *]).
+((a -&gt; Eff effs r) -&gt; Eff effs r) -&gt; Handle eff effs i r effs' a
+</span><a href="Control.Effect.Internal.html#control"><span class="hs-identifier hs-var">control</span></a></span><span> </span><span class="hs-glyph">\</span><span id="local-6989586621679044486"><span class="annot"><span class="annottext">Bool -&gt; Eff effs (f a)
+</span><a href="#local-6989586621679044486"><span class="hs-identifier hs-var">k</span></a></span></span><span> </span><span class="hs-glyph">-&gt;</span><span> </span><span class="annot"><span class="annottext">(f a -&gt; f a -&gt; f a)
+-&gt; Eff effs (f a) -&gt; Eff effs (f a) -&gt; Eff effs (f a)
+forall (f :: * -&gt; *) a b c.
+Applicative f =&gt;
+(a -&gt; b -&gt; c) -&gt; f a -&gt; f b -&gt; f c
+</span><span class="hs-identifier hs-var">liftA2</span></span><span> </span><span class="annot"><span class="annottext">f a -&gt; f a -&gt; f a
+forall (f :: * -&gt; *) a. Alternative f =&gt; f a -&gt; f a -&gt; f a
+</span><span class="hs-operator hs-var">(&lt;|&gt;)</span></span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Eff effs (f a)
+</span><a href="#local-6989586621679044486"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">True</span></span><span class="hs-special">)</span><span> </span><span class="hs-special">(</span><span class="annot"><span class="annottext">Bool -&gt; Eff effs (f a)
+</span><a href="#local-6989586621679044486"><span class="hs-identifier hs-var">k</span></a></span><span> </span><span class="annot"><span class="annottext">Bool
+</span><span class="hs-identifier hs-var">False</span></span><span class="hs-special">)</span><span>
+</span><span id="line-25"></span></pre></body></html>
