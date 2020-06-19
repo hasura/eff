@@ -40,13 +40,15 @@ common common
 
   default-language: Haskell2010
   default-extensions:
-    ApplicativeDo BangPatterns BlockArguments ConstraintKinds DataKinds DefaultSignatures
-    DeriveDataTypeable DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable
-    DerivingStrategies DerivingVia EmptyCase ExistentialQuantification FlexibleContexts
-    FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs
-    KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns OverloadedStrings
-    PatternSynonyms QuantifiedConstraints RankNTypes RoleAnnotations ScopedTypeVariables
-    StandaloneDeriving StandaloneKindSignatures TupleSections TypeApplications TypeFamilies
+    BangPatterns BlockArguments ConstraintKinds DataKinds DefaultSignatures
+    DeriveDataTypeable DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift
+    DeriveTraversable DerivingStrategies DerivingVia EmptyCase
+    ExistentialQuantification FlexibleContexts FlexibleInstances
+    FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs
+    KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns
+    OverloadedStrings PatternSynonyms QuantifiedConstraints RankNTypes
+    RoleAnnotations ScopedTypeVariables StandaloneDeriving
+    StandaloneKindSignatures TupleSections TypeApplications TypeFamilies
     TypeFamilyDependencies TypeOperators UnliftedNewtypes ViewPatterns
 
 library
