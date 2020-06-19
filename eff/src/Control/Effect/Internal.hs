@@ -480,16 +480,66 @@ instance Monad (Handle eff effs i r effs') where
   Handle# m >>= f = Handle# \rs -> m rs >>= \a -> runHandle# (f a) rs
   {-# INLINE (>>=) #-}
 
-newtype Handler eff
-  = Handler# { runHandler# :: forall effs a. eff :<# effs -> eff (Eff effs) a -> Eff effs a }
+{- Note [Explicitly unbox Handler results]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Normally, EVM returns results via the lifted Result type. This is necessary,
+since prompt# is not levity-polymorphic, and the wrapping/unwrapping that would
+be required if we returned the results in an unlifted type would leak
+continuation frames (TODO: write a Note that explains this!).
+
+Normally that is okay, since the optimizer will get rid of almost all of the
+intermediate Result values automatically. However, it can’t do that when calling
+an effect handler, those are unknown calls. Fortunately, in this situation,
+there is no obstacle to doing the unboxing explicitly, as we have control over
+the way we store handlers in the targets vector.
+
+The idea is simple enough. In `handle`, we accept an Eff value, but we eagerly
+adapt it to return an unboxed value:
+
+    handle (Eff# (EVM# m)) =
+      ... case result of { (# s, Result a b #) -> (# s, a, b #) } ...
+
+We arrange for that case expression to appear in a minimal unfolding that can be
+aggressively inlined at use sites, as described in Note [Manual worker/wrapper].
+At each use site, GHC can see both the wrapping and unwrapping, so it will
+eliminate the Result constructor altogether.
+
+Dually, on the other side, we do the inverse transformation in `send`:
+
+    send e = ... case f e rs s of { (# s, a, b #) -> (# s, Result a b #) } ...
+
+In exactly the same fashion, GHC can inline `send` at its use site (since its
+definition is very small), and the wrapping will be fused with any local
+unwrapping. Voilà, we have eliminated the constructor even across unknown calls!
+
+In reality, this wrapping/unwrapping is handled via the Handler pattern synonym,
+just as for all the other types we do this manual transformation for. -}
+
+newtype Handler eff = Handler# { runHandler#
+  -- see Note [Explicitly unbox Handler results]
+  :: forall effs a
+   . eff :<# effs
+  -> eff (Eff effs) a
+  -> Registers#
+  -> State# RealWorld
+  -> (# State# RealWorld, Registers#, a #)
+  }
+
 newtype WrappedHandler eff
   -- Unfortunately necessary to avoid the need for impredicative polymorphism in
   -- the definition of the Handler pattern synonym.
   = WrapHandler (forall effs a. eff :< effs => eff (Eff effs) a -> Eff effs a)
+
 pattern Handler :: (forall effs a. eff :< effs => eff (Eff effs) a -> Eff effs a) -> Handler eff
--- see Note [Manual worker/wrapper]
-pattern Handler{runHandler} <- ((\(Handler# f) -> WrapHandler (f IndexDict#)) -> WrapHandler runHandler)
-  where Handler f = Handler# \IndexDict# -> f
+-- see Note [Explicitly unbox Handler results] and Note [Manual worker/wrapper]
+pattern Handler{runHandler} <- ((\(Handler# f) ->
+  WrapHandler \e -> Eff# (EVM# \rs1 -> IO \s1 ->
+    case f IndexDict# e rs1 s1 of
+      (# s2, rs2, a #) -> (# s2, Result rs2 a #)
+  )) -> WrapHandler runHandler)
+  where Handler f = Handler# \IndexDict# e rs1 s1 ->
+          case unIO (unEVM# (unEff# (f e)) rs1) s1 of
+            (# s2, Result rs2 a #) -> (# s2, rs2, a #)
 {-# COMPLETE Handler #-}
 
 -- -----------------------------------------------------------------------------
