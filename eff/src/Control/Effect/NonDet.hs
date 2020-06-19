@@ -5,7 +5,6 @@ module Control.Effect.NonDet
   ) where
 
 import Control.Applicative
-import Control.Category ((>>>))
 import Control.Effect.Base
 import Control.Effect.Internal (NonDet(..))
 
@@ -20,6 +19,6 @@ import Control.Effect.Internal (NonDet(..))
 -- types with inefficient append operations, such as @[]@. Consider using a data
 -- structure that supports efficient appends, such as @Data.Sequence.Seq@.
 runNonDetAll :: Alternative f => Eff (NonDet ': effs) a -> Eff effs (f a)
-runNonDetAll = fmap pure >>> handle \case
+runNonDetAll = handle (pure . pure) \case
   Empty -> abort empty
   Choose -> control \k -> liftA2 (<|>) (k True) (k False)

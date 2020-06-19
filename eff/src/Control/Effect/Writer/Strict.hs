@@ -21,7 +21,7 @@ import Data.Function
 -- that this will cause the elements to be accumulated in reverse order).
 runWriter :: Monoid w => Eff (Writer w ': effs) a -> Eff effs (w, a)
 runWriter (m0 :: Eff (Writer w ': effs) a) = lift m0
-  & handle \case
+  & handle pure \case
       Tell w -> liftH $ tellS w
       Listen m -> locally $ runListen m
       Censor f m -> locally $ runCensor f m
@@ -32,7 +32,7 @@ runWriter (m0 :: Eff (Writer w ': effs) a) = lift m0
 
     runListen :: Writer w :< effs' => Eff (Writer w ': effs') b -> Eff effs' (w, b)
     runListen = lift
-      >>> handle \case
+      >>> handle pure \case
             Tell w -> liftH do
               tellS w
               lift1 $ tell w
@@ -41,7 +41,7 @@ runWriter (m0 :: Eff (Writer w ': effs) a) = lift m0
       >>> runState mempty
 
     runCensor :: Writer w :< effs' => (w -> w) -> Eff (Writer w ': effs') b -> Eff effs' b
-    runCensor f = handle \case
+    runCensor f = handle pure \case
       Tell w -> liftH $ lift1 (tell $! f w)
       Listen m -> locally $ runListen m
       Censor g m -> locally $ runCensor g m

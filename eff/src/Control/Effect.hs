@@ -52,6 +52,7 @@ module Control.Effect (
   , liftH
   , abort
   , control
+  , control0
   , locally
 
   -- * Performing I/O

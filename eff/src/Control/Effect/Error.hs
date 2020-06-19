@@ -6,7 +6,6 @@ module Control.Effect.Error
   ) where
 
 import Control.Effect.Base
-import Control.Category ((>>>))
 
 -- | The @'Error' e@ effect allows throwing and catching errors of type @e@.
 --
@@ -28,6 +27,6 @@ catch a b = send $ Catch a b
 -- | Handles an 'Error' effect. Returns 'Left' if the computation raised an
 -- uncaught error, otherwise returns 'Right'.
 runError :: forall e a effs. Eff (Error e ': effs) a -> Eff effs (Either e a)
-runError = fmap Right >>> handle \case
+runError = handle (pure . Right) \case
   Throw e -> abort $ Left e
   Catch m f -> locally (either f pure =<< runError m)

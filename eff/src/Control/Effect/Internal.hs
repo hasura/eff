@@ -233,12 +233,12 @@ pattern PromptId{unPromptId} <- PromptId# (I# -> unPromptId)
 
 data Unwind
   = UnwindAbort PromptId ~Any
-  | UnwindControl (Capture Any) -- TODO: unpack?
+  | UnwindControl (Capture Any)
 
 instance Show Unwind where
   show (UnwindAbort (PromptId pid) _)
     = "<<Control.Eff.Internal.abort:" ++ show pid ++ ">>"
-  show (UnwindControl (Capture (PromptId pid) _ _))
+  show (UnwindControl (Capture (PromptId pid) _ _ _))
     = "<<Control.Eff.Internal.control:" ++ show pid ++ ">>"
 instance Exception Unwind
 
@@ -246,13 +246,22 @@ data Capture a where
   Capture
     :: PromptId
     -- ^ The prompt to capture up to.
-    -> ((b -> EVM c) -> EVM c)
+    -> CaptureMode
+    -> ((b -> EVM c) -> EVM d)
     -- ^ The replacement continuation passed by the user to the original call to
     -- 'control'. This should be invoked with the fully-composed continuation
     -- after capturing is complete.
     -> (b -> EVM a)
     -- ^ The composed continuation captured so far.
     -> Capture a
+
+data CaptureMode
+  -- | The captured continuation should include the prompt being captured up to.
+  -- This mode corresponds to the 'control' operator.
+  = IncludePrompt
+  -- | The captured continuation should include frames up to the the prompt, but
+  -- not the prompt itself. This mode corresponds to the 'control0' operator.
+  | ExcludePrompt
 
 captureVM :: forall a b. Capture a -> IO b
 captureVM a = gcoerceWith (Coercion.sym $ anyCo @a) $
@@ -262,33 +271,37 @@ captureVM a = gcoerceWith (Coercion.sym $ anyCo @a) $
 -- | Runs an 'EVM' action with a new prompt installed. The arguments specify
 -- what happens when control exits the action.
 promptVM
-  :: forall a
+  :: forall a b
    . IO (Registers, a)
-  -> Registers
-  -- ^ registers to restore on a normal return
-  -> (PromptId -> Any -> IO (Registers, a))
+  -> (a -> IO b)
+  -- ^ return handler
+  -> (PromptId -> Any -> IO b)
   -- ^ abort handler
-  -> (Capture a -> IO (Registers, a))
-  -- ^ control handler
-  -> IO (Registers, a)
-promptVM m rs onAbort onControl = IO.handle handleUnwind do
+  -> (Capture a -> IO b)
+  -- ^ capture handler
+  -> IO b
+promptVM m onReturn onAbort onControl = IO.handle handleUnwind do
   -- TODO: Explain why it is crucial that the exception handler is installed
   -- outside of the frame where we replace the registers!
   Result _ a <- IO (reset# (unIO (packIOResult m)))
-  pure (rs, a)
+  onReturn a
   where
     handleUnwind (UnwindAbort pid a) = onAbort pid a
     handleUnwind (UnwindControl cap) = gcoerceWith (anyCo @a) $ onControl (coerce cap)
 {-# INLINE promptVM #-}
 
--- | Like 'promptVM', but for prompts that cannot be the target of an abort.
+-- | Like 'promptVM', but for prompts that cannot be the target of a capture or
+-- abort (that is, prompts that only install winders/unwinders).
 promptVM_
   :: forall a
    . IO (Registers, a)
   -> Registers
+  -- ^ registers to restore on normal return
   -> (Capture a -> IO (Registers, a))
+  -- ^ capture handler
   -> IO (Registers, a)
-promptVM_ m rs f = promptVM m rs rethrowAbort f where
+promptVM_ m rs onCapture = promptVM m onReturn rethrowAbort onCapture where
+  onReturn a = pure (rs, a)
   -- TODO: Check if this unwrapping/rewrapping is eliminated at the STG level.
   rethrowAbort pid a = IO.throwIO $! UnwindAbort pid a
 {-# INLINE promptVM_ #-}
@@ -301,22 +314,24 @@ controlVM f = IO (shift# f#) <&> \(Result rs a) -> (BoxRegisters rs, a) where
 
 -- TODO: Share some code between `parameterizeVM` and `handle`.
 parameterizeVM :: (Registers -> Registers) -> EVM a -> EVM a
-parameterizeVM adjust (EVM m) = EVM \rs -> do
-  promptVM_ (m (adjust rs)) rs \(Capture target f k1) ->
-    controlVM \k2 -> captureVM $! handleCapture target f k1 k2
+parameterizeVM adjust (EVM m0) = EVM \rs -> do
+  promptVM_ (m0 (adjust rs)) rs \(Capture target mode f k1) ->
+    controlVM \k2 -> captureVM $! handleCapture target mode f k1 k2
   where
     handleCapture
       :: PromptId
-      -> ((a -> EVM d) -> EVM d)
+      -> CaptureMode
+      -> ((a -> EVM d) -> EVM e)
       -> (a -> EVM b)
       -> (b -> EVM c)
       -> Capture c
-    handleCapture target1 f1 k1 k2 =
+    handleCapture target1 mode1 f1 k1 k2 =
       let k3 a = EVM \rs1 -> do
-            (rs2, b) <- promptVM_ (unEVM (k1 a) (adjust rs1)) rs1 \(Capture target2 f2 k4) ->
-              captureVM $! handleCapture target2 f2 k4 k2
+            let m = unEVM (k1 a) (adjust rs1)
+            (rs2, b) <- promptVM_ m rs1 \(Capture target2 mode2 f2 k4) ->
+              captureVM $! handleCapture target2 mode2 f2 k4 k2
             unEVM (k2 b) rs2
-      in Capture target1 f1 k3
+      in Capture target1 mode1 f1 k3
 {-# INLINE parameterizeVM #-}
 
 {- -----------------------------------------------------------------------------
@@ -432,33 +447,36 @@ run (Eff m) = unsafeDupablePerformIO (snd <$> m initialRegisters)
 --     includes the other effects in scope at the point of the 'handle' call
 --     (used by 'liftH').
 --
---   * The @i@ parameter is the return type of the handled computation (used by
---     'control' and 'abort').
+--   * The @i@ parameter is the return type of the handled computation before
+--     the exit handler has been applied (used by 'control0').
+--
+--   * The @r@ parameter is the final return type of the handled computation
+--     (used by 'abort', 'control', and 'control0').
 --
 --   * The @effs'@ parameter is the list of effects in scope at the point of the
 --     originating 'send' call (used by 'locally').
 --
 -- See 'handle' for more details.
-type Handle :: Effect -> [Effect] -> Type -> [Effect] -> Type -> Type
-type role Handle nominal nominal representational nominal representational
-newtype Handle eff effs i effs' a = Handle# { runHandle# :: Registers# -> Eff effs' a }
-pattern Handle :: (Registers -> Eff effs' a) -> Handle eff effs i effs' a
+type Handle :: Effect -> [Effect] -> Type -> Type -> [Effect] -> Type -> Type
+type role Handle nominal nominal representational representational nominal representational
+newtype Handle eff effs i r effs' a = Handle# { runHandle# :: Registers# -> Eff effs' a }
+pattern Handle :: (Registers -> Eff effs' a) -> Handle eff effs i r effs' a
 -- see Note [Manual worker/wrapper]
 pattern Handle{runHandle} <- Handle# ((\f (BoxRegisters rs) -> f rs) -> runHandle)
   where Handle f = Handle# \rs -> f (BoxRegisters rs)
 {-# COMPLETE Handle #-}
 
-instance Functor (Handle eff effs i effs') where
+instance Functor (Handle eff effs i r effs') where
   fmap f m = m >>= pure . f
   {-# INLINE fmap #-}
 
-instance Applicative (Handle eff effs i effs') where
+instance Applicative (Handle eff effs i r effs') where
   pure a = Handle# \_ -> pure a
   {-# INLINE pure #-}
   (<*>) = ap
   {-# INLINE (<*>) #-}
 
-instance Monad (Handle eff effs i effs') where
+instance Monad (Handle eff effs i r effs') where
   Handle# m >>= f = Handle# \rs -> m rs >>= \a -> runHandle# (f a) rs
   {-# INLINE (>>=) #-}
 
@@ -490,10 +508,14 @@ send !e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) 
 --   * 'abort' — Aborts the computation to the 'handle' call and returns a value
 --     directly. This is usually used to implement exception-like operations.
 --
---   * 'control' — Captures the current continuation up to the 'handle' call and
---     aborts, passing the captured continuation to the handler. This can be
---     used to implement complex control operators such as coroutines or
---     resumable exceptions.
+--   * 'control' — Captures the current continuation up to and including the
+--     'handle' call and aborts, passing the captured continuation to the
+--     handler. This can be used to implement complex control operators such as
+--     coroutines or resumable exceptions.
+--
+--   * 'control0' — Like 'control', but does not include the 'handle' call
+--     itself in the captured continuation, so a different handler may be
+--     installed before resuming the computation.
 --
 --   * 'locally' — Runs an action directly in the context of the originating
 --     'send' call. This can be used to implement “scoped” operations like
@@ -502,28 +524,35 @@ send !e = Eff \rs@(Registers _ ts) -> unEff (runHandler (lookupTarget @effs ts) 
 -- See the documentation for each of the above functions for examples and more
 -- details.
 handle
-  :: forall eff a effs
-   . (forall effs' b. eff :< effs' => eff (Eff effs') b -> Handle eff effs a effs' b)
+  :: forall eff a r effs
+   . (a -> Eff effs r)
+  -- ^ The exit handler, aka the action to take on normal returns (often just 'pure').
+  -> (forall effs' b. eff :< effs' => eff (Eff effs') b -> Handle eff effs a r effs' b)
   -- ^ The handler function.
   -> Eff (eff ': effs) a
   -- ^ The action to handle.
-  -> Eff effs a
-handle f = handleVM \rs -> Handler \e -> runHandle# (f e) rs
+  -> Eff effs r
+handle onReturn f = handleVM onReturn \rs -> Handler \e -> runHandle# (f e) rs
 {-# INLINE handle #-}
 
-handleVM :: forall eff a effs. (Registers# -> Handler eff) -> Eff (eff ': effs) a -> Eff effs a
-handleVM f (Eff m1) = Eff# (withHandler m1)
+handleVM
+  :: forall eff a r effs
+   . (a -> Eff effs r)
+  -> (Registers# -> Handler eff)
+  -> Eff (eff ': effs) a
+  -> Eff effs r
+handleVM onReturn f (Eff m1) = Eff# (withHandler m1)
   where
-    withHandler :: (Registers -> IO (Registers, a)) -> EVM a
+    withHandler :: (Registers -> IO (Registers, a)) -> EVM r
     -- GHC can’t figure out how to pull this small bit of unboxing out of the
     -- recursive knot we’re tying, so we do it manually here
     withHandler g = withHandler# (unEVM# (EVM g))
     {-# INLINE withHandler #-}
 
-    withHandler# :: (Registers# -> IO (Result a)) -> EVM a
+    withHandler# :: (Registers# -> IO (Result a)) -> EVM r
     withHandler# m2 = EVM \rs -> do
-      resetPrompt (EVM# m2) rs \(Capture target g k1) ->
-        controlVM \k2 -> captureVM $! handleCaptureElsewhere target g k1 k2
+      resetPrompt (EVM# m2) rs \(Capture target mode g k1) ->
+        controlVM \k2 -> captureVM $! handleCaptureElsewhere target mode g k1 k2
 
     pushPrompt (Registers pid1 ts1) =
       let pid2 = PromptId (unPromptId pid1 + 1)
@@ -531,50 +560,69 @@ handleVM f (Eff m1) = Eff# (withHandler m1)
           rs2 = Registers pid2 ts2
       in rs2
 
+    resetPrompt
+      :: EVM a
+      -> Registers
+      -> (Capture a -> IO (Registers, r))
+      -> IO (Registers, r)
     resetPrompt m rs1 onCaptureElsewhere =
-      promptVM (unEVM m rs2) rs1 handleAbort handleCapture
+      promptVM (unEVM m rs2) handleReturn handleAbort handleCapture
       where
         !rs2@(Registers pid _) = pushPrompt rs1
+
+        handleReturn a = unEff (onReturn a) rs1
 
         handleAbort target a
           | unPromptId target == unPromptId pid = case a of { Any b -> pure (rs1, b) }
           | otherwise = IO.throwIO $! UnwindAbort target a
 
         handleCapture = \case
-          Capture target (g :: (b -> EVM c) -> EVM c) k1
+          Capture target mode (g :: (b -> EVM c) -> EVM d) k1
             | unPromptId target == unPromptId pid ->
                 -- We’re capturing up to this prompt, so the new continuation’s
                 -- result type must be this function’s result type.
-                gcastWith (axiom @a @c) do
-                  unEVM (g (withHandler . unEVM . k1)) rs1
+                gcastWith (axiom @r @d) case mode of
+                  -- If we’re capturing the prompt, then the captured
+                  -- continuation include onReturn, so its result type is the
+                  -- final result type.
+                  IncludePrompt -> gcastWith (axiom @r @c) $ unEVM (g (withHandler . unEVM . k1)) rs1
+                  -- If we’re not capturing the prompt, the captured
+                  -- continuation does NOT include onReturn, so its result type
+                  -- is the intermediate result type.
+                  ExcludePrompt -> gcastWith (axiom @a @c) $ unEVM (g k1) rs1
           cap -> onCaptureElsewhere cap
 
     handleCaptureElsewhere
       :: PromptId
-      -> ((b -> EVM d) -> EVM d)
+      -> CaptureMode
+      -> ((b -> EVM d) -> EVM e)
       -> (b -> EVM a)
-      -> (a -> EVM c)
+      -> (r -> EVM c)
       -> Capture c
-    handleCaptureElsewhere target1 f1 k1 k2 =
+    handleCaptureElsewhere target1 mode1 f1 k1 k2 =
       let k3 a = EVM \rs1 -> do
-            (rs2, b) <- resetPrompt (k1 a) rs1 \(Capture target g k4) ->
-              captureVM $! handleCaptureElsewhere target g k4 k2
+            (rs2, b) <- resetPrompt (k1 a) rs1 \(Capture target2 mode2 g k4) ->
+              captureVM $! handleCaptureElsewhere target2 mode2 g k4 k2
             unEVM (k2 b) rs2
-      in Capture target1 f1 k3
+      in Capture target1 mode1 f1 k3
 
-locally :: Eff effs' a -> Handle eff effs i effs' a
+locally :: Eff effs' a -> Handle eff effs i r effs' a
 locally m = Handle \_ -> m
 
-liftH :: Eff (eff ': effs) a -> Handle eff effs i effs' a
+liftH :: Eff (eff ': effs) a -> Handle eff effs i r effs' a
 liftH (Eff# m) = Handle \(Registers _ ts) ->
   Eff# (parameterizeVM (\(Registers pid _) -> Registers pid ts) m)
 
-abort :: i -> Handle eff effs i effs' a
+abort :: r -> Handle eff effs i r effs' a
 abort a = Handle \(Registers pid _) -> Eff \_ -> IO.throwIO $! UnwindAbort pid (Any a)
 
-control :: ((a -> Eff effs i) -> Eff effs i) -> Handle eff effs i effs' a
+control :: ((a -> Eff effs r) -> Eff effs r) -> Handle eff effs i r effs' a
 control f = Handle \(Registers pid _) -> Eff \_ ->
-  controlVM \k1 -> captureVM $! Capture pid (\k2 -> unEff# (f (Eff# . k2))) k1
+  controlVM \k1 -> captureVM $! Capture pid IncludePrompt (\k2 -> unEff# (f (Eff# . k2))) k1
+
+control0 :: ((a -> Eff (eff ': effs) i) -> Eff effs r) -> Handle eff effs i r effs' a
+control0 f = Handle \(Registers pid _) -> Eff \_ ->
+  controlVM \k1 -> captureVM $! Capture pid ExcludePrompt (\k2 -> unEff# (f (Eff# . k2))) k1
 
 -- -----------------------------------------------------------------------------
 
@@ -661,7 +709,7 @@ unsafeIOToEff = Eff# . liftIO
 -- the final effect handled, and 'runIO' completely replaces the call to 'run'.
 runIO :: Eff '[IOE] a -> IO a
 runIO m0 = snd <$> unEff (handleIO m0) initialRegisters where
-  handleIO = handle \case
+  handleIO = handle pure \case
     LiftIO m -> locally (unsafeIOToEff m)
 
 instance IOE :< effs => MonadIO (Eff effs) where
@@ -679,8 +727,8 @@ data State s :: Effect where
 evalState :: s -> Eff (State s ': effs) a -> Eff effs a
 evalState (s0 :: s) (Eff m0) = Eff \rs -> do
   ref <- newIORef s0
-  promptVM_ (m0 (pushHandler ref rs)) rs \(Capture target f k1) ->
-    controlVM \k2 -> handleCapture ref target f k1 k2
+  promptVM_ (m0 (pushHandler ref rs)) rs \(Capture target mode f k1) ->
+    controlVM \k2 -> handleCapture ref target mode f k1 k2
   where
     pushHandler :: IORef s -> Registers -> Registers
     pushHandler ref (Registers pid ts) =
@@ -693,19 +741,20 @@ evalState (s0 :: s) (Eff m0) = Eff \rs -> do
     handleCapture
       :: IORef s
       -> PromptId
-      -> ((a -> EVM d) -> EVM d)
+      -> CaptureMode
+      -> ((a -> EVM d) -> EVM e)
       -> (a -> EVM b)
       -> (b -> EVM c)
       -> IO (Registers, b)
-    handleCapture ref1 target1 f1 k1 k2 = do
+    handleCapture ref1 target1 mode1 f1 k1 k2 = do
       s <- readIORef ref1
       let k3 a = EVM \rs1 -> do
             ref2 <- newIORef s
             let m = unEVM (k1 a) (pushHandler ref2 rs1)
-            (rs2, b) <- promptVM_ m rs1 \(Capture target2 f2 k4) ->
-              handleCapture ref2 target2 f2 k4 k2
+            (rs2, b) <- promptVM_ m rs1 \(Capture target2 mode2 f2 k4) ->
+              handleCapture ref2 target2 mode2 f2 k4 k2
             unEVM (k2 b) rs2
-      captureVM $! Capture target1 f1 k3
+      captureVM $! Capture target1 mode1 f1 k3
 
 -- -----------------------------------------------------------------------------
 

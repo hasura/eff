@@ -5,7 +5,6 @@ module Control.Effect.Coroutine
   , runCoroutine
   ) where
 
-import Control.Category ((>>>))
 import Control.Effect.Base
 
 data Coroutine a b :: Effect where
@@ -16,8 +15,8 @@ yield = send . Yield
 
 data Status effs a b c
   = Done c
-  | Yielded a !(b -> Eff effs (Status effs a b c))
+  | Yielded a !(b -> Eff (Coroutine a b ': effs) c)
 
 runCoroutine :: Eff (Coroutine a b ': effs) c -> Eff effs (Status effs a b c)
-runCoroutine = fmap Done >>> handle \case
-  Yield a -> control \k -> pure $! Yielded a k
+runCoroutine = handle (pure . Done) \case
+  Yield a -> control0 \k -> pure $! Yielded a k

@@ -26,6 +26,7 @@ module Control.Effect.Base (
   , liftH
   , abort
   , control
+  , control0
   , locally
 
   -- * Performing I/O
@@ -58,4 +59,4 @@ interpret
   -> Eff (eff ': effs) a
   -- ^ The action to handle.
   -> Eff effs a
-interpret f = handle (liftH . f)
+interpret f = handle pure (liftH . f)

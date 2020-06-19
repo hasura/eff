@@ -93,13 +93,14 @@ spec = do
           results `shouldBe` (Sum 6, [(Sum 3, True), (Sum 4, False)])
 
   describe "Coroutine" do
-    let feed :: [b] -> Status effs a b c -> Eff effs [a]
-        feed (a:as) (Yielded b k) = (b:) <$> (feed as =<< k a)
-        feed []     (Yielded b _) = pure [b]
-        feed _      (Done _)      = pure []
+    let feed :: forall a b effs c. [b] -> Eff (Coroutine a b ': effs) c -> Eff effs [a]
+        feed as0 m = go as0 =<< runCoroutine m where
+          go (a:as) (Yielded b k) = (b:) <$> (feed as (k a))
+          go []     (Yielded b _) = pure [b]
+          go _      (Done _)      = pure []
 
     it "allows suspending and resuming a computation" do
       let squares :: Coroutine Integer Integer :< effs => Integer -> Eff effs ()
           squares n = yield (n * n) >>= squares
-      run (feed [1..5] =<< runCoroutine @Integer @Integer (squares 0))
+      run (feed @Integer @Integer [1..5] (squares 0))
         `shouldBe` [0, 1, 4, 9, 16, 25]
