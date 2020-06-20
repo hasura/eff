@@ -23,7 +23,7 @@ import Data.IORef
 import Data.Kind (Constraint, Type)
 import Data.Type.Coercion (Coercion(..), gcoerceWith)
 import Data.Type.Equality ((:~:)(..), gcastWith)
-import GHC.Exts (Any, Int(..), Int#, RealWorld, RuntimeRep(..), SmallArray#, State#, TYPE, reset#, shift#)
+import GHC.Exts (Any, Int(..), Int#, RealWorld, RuntimeRep(..), SmallArray#, State#, TYPE, prompt#, control0#)
 import GHC.Types (IO(..))
 import System.IO.Unsafe (unsafeDupablePerformIO)
 import Unsafe.Coerce (unsafeCoerce)
@@ -283,7 +283,7 @@ promptVM
 promptVM m onReturn onAbort onControl = IO.handle handleUnwind do
   -- TODO: Explain why it is crucial that the exception handler is installed
   -- outside of the frame where we replace the registers!
-  Result _ a <- IO (reset# (unIO (packIOResult m)))
+  Result _ a <- IO (prompt# (unIO (packIOResult m)))
   onReturn a
   where
     handleUnwind (UnwindAbort pid a) = onAbort pid a
@@ -307,7 +307,7 @@ promptVM_ m rs onCapture = promptVM m onReturn rethrowAbort onCapture where
 {-# INLINE promptVM_ #-}
 
 controlVM :: ((a -> EVM b) -> IO (Registers, b)) -> IO (Registers, a)
-controlVM f = IO (shift# f#) <&> \(Result rs a) -> (BoxRegisters rs, a) where
+controlVM f = IO (control0# f#) <&> \(Result rs a) -> (BoxRegisters rs, a) where
   f# k# = unIO (f k <&> \(BoxRegisters rs, a) -> Result rs a) where
     k a = EVM# \rs -> IO $ k# \s -> (# s, Result rs a #)
 {-# INLINE controlVM #-}

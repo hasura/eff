@@ -3,10 +3,10 @@ language: c
 addons:
   apt:
     sources: [hvr-ghc]
-    packages: [cabal-install-3.0]
+    packages: [cabal-install-3.2]
 env:
-- GHC_VERSION: 8.11.0.20200215
-  GHC_BINDIST: https://gitlab.haskell.org/lexi.lambda/ghc/raw/continuations-bindist-8.11.0.20200215-x86_64-xenial/ghc.tar.xz
+- GHC_VERSION: 8.11.0.20200620
+  GHC_BINDIST: https://gitlab.haskell.org/lexi.lambda/ghc/raw/continuations-bindist-8.11.0.20200620-x86_64-xenial/ghc.tar.xz
 
 cache:
   directories:
@@ -30,7 +30,7 @@ before_install:
 
 install:
 - cp cabal.project.travis cabal.project.local
-- cabal new-update
-- cabal new-build all --only-dependencies
+- cabal v2-update
+- cabal v2-build all --only-dependencies
 script:
-- cabal new-test all --test-show-details=direct
+- cabal v2-test all --test-show-details=direct
