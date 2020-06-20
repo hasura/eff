@@ -667,12 +667,20 @@ abort :: r -> Handle eff effs i r effs' a
 abort a = Handle \(Registers pid _) -> Eff \_ -> IO.throwIO $! UnwindAbort pid (Any a)
 
 control :: ((a -> Eff effs r) -> Eff effs r) -> Handle eff effs i r effs' a
-control f = Handle \(Registers pid _) -> Eff \_ ->
-  controlVM \k1 -> captureVM $! Capture pid IncludePrompt (\k2 -> unEff# (f (Eff# . k2))) k1
+control (f :: (a -> Eff effs r) -> Eff effs r) =
+  controlWithMode @r IncludePrompt (coerce f)
 
 control0 :: ((a -> Eff (eff ': effs) i) -> Eff effs r) -> Handle eff effs i r effs' a
-control0 f = Handle \(Registers pid _) -> Eff \_ ->
-  controlVM \k1 -> captureVM $! Capture pid ExcludePrompt (\k2 -> unEff# (f (Eff# . k2))) k1
+control0 (f :: (a -> Eff (eff ': effs) i) -> Eff effs r) =
+  controlWithMode @i ExcludePrompt (coerce f)
+
+controlWithMode
+  :: forall b eff effs i r effs' a
+   . CaptureMode
+  -> ((a -> EVM b) -> EVM r)
+  -> Handle eff effs i r effs' a
+controlWithMode mode f = Handle \(Registers pid _) -> Eff \_ ->
+  controlVM \k -> captureVM $! Capture pid mode f k
 
 -- -----------------------------------------------------------------------------
 
