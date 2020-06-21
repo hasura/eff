@@ -4,7 +4,7 @@
 
 `eff` is a work-in-progress implementation of an *extensible effect system* for Haskell, a general-purpose solution for tracking effects at the type level and handling them in flexible ways. Compared to other effect systems currently available, `eff` differentiates itself in the following respects:
 
-  - `eff` is **really fast**. Built on top of low-level primitives added to the GHC RTS to support capturing slices of the call stack, `eff` is performant by design. Using a direct implementation of delimited control allows it to be fast without relying on fickle compiler optimizations to eliminate indirection.
+  - `eff` is **really fast**. Built on top of [low-level primitives added to the GHC RTS][gh:proposal] to support capturing slices of the call stack, `eff` is performant by design. Using a direct implementation of delimited control allows it to be fast without relying on fickle compiler optimizations to eliminate indirection.
 
     Traditional effect system microbenchmarks fail to capture the performance of real code, as they are so small that GHC often ends up inlining everything. In real programs, GHC compiles most effect-polymorphic code via dictionary passing, not specialization, causing the performance of other effect systems to degrade beyond what microbenchmarks would imply. `eff` takes care to allow GHC to generate efficient code without the need for whole-program specialization.
 
@@ -66,7 +66,7 @@ That’s it. For a thorough explanation of how the above example works, [see the
 
 ## Implementation status
 
-`eff` is a work in progress, and since it requires changes to the GHC RTS, you cannot use it yet on any released version of GHC. If there is interest, I can try to provide builds of GHC with the necessary changes to use `eff`, but otherwise you will need to wait for them to be merged into GHC proper before using `eff` yourself.
+`eff` is a work in progress, and since it requires changes to the GHC RTS, you cannot use it yet on any released version of GHC. If there is interest, I can try to provide builds of GHC with the necessary changes to use `eff`, but otherwise you will need to wait for them to be merged into GHC proper before using `eff` yourself. There is currently [an open GHC proposal][gh:proposal] to add the necessary operations, and [the work-in-progress implementation branch is available here][gl:continuations].
 
 Looking beyond that, many things are still not yet implemented. More work needs to be done to properly interoperate with `IO` exceptions, and the set of built-in effects currently provided is very small. However, all the existing functionality works, and it has been designed to support extensions, so I do not anticipate any difficulty supporting them.
 
@@ -84,5 +84,7 @@ All code in `eff` is original in the sense that it was not taken directly from o
 [docs]: https://hasura.github.io/eff/Control-Effect.html
 [gh:fused-effects]: https://github.com/fused-effects/fused-effects
 [gh:polysemy]: https://github.com/polysemy-research/polysemy
+[gh:proposal]: https://github.com/ghc-proposals/ghc-proposals/pull/313
+[gl:continuations]: https://gitlab.haskell.org/lexi.lambda/ghc/-/commits/first-class-continuations
 [oleg:exteff]: http://okmij.org/ftp/Haskell/extensible/exteff.pdf
 [oleg:more]: http://okmij.org/ftp/Haskell/extensible/more.pdf
