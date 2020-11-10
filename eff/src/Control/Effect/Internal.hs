@@ -467,18 +467,8 @@ pattern Handle{runHandle} <- Handle# ((\f (BoxRegisters rs) -> f rs) -> runHandl
 {-# COMPLETE Handle #-}
 
 instance Functor (Handle eff effs i r effs') where
-  fmap f m = m >>= pure . f
+  fmap f (Handle# m) = Handle# \rs -> f <$> m rs
   {-# INLINE fmap #-}
-
-instance Applicative (Handle eff effs i r effs') where
-  pure a = Handle# \_ -> pure a
-  {-# INLINE pure #-}
-  (<*>) = ap
-  {-# INLINE (<*>) #-}
-
-instance Monad (Handle eff effs i r effs') where
-  Handle# m >>= f = Handle# \rs -> m rs >>= \a -> runHandle# (f a) rs
-  {-# INLINE (>>=) #-}
 
 {- Note [Explicitly unbox Handler results]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

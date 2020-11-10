@@ -25,5 +25,5 @@ local a b = send $ Local a b
 -- | Handles a @'Reader'@ effect by supplying a value for the environment.
 runReader :: r -> Eff (Reader r ': effs) a -> Eff effs a
 runReader r = handle pure \case
-  Ask -> pure r
+  Ask -> liftH $ pure r
   Local f m -> locally let !r' = f r in runReader r' m
