@@ -23,9 +23,9 @@ import Data.IORef
 import Data.Kind (Constraint, Type)
 import Data.Type.Coercion (Coercion(..), gcoerceWith)
 import Data.Type.Equality ((:~:)(..), gcastWith)
-import GHC.Exts (Any, Int(..), Int#, RealWorld, RuntimeRep(..), SmallArray#, State#, TYPE, prompt#, control0#)
+import GHC.Exts (Any, Int(..), Int#, RealWorld, RuntimeRep(..), SmallArray#, State#, TYPE, prompt#, control0#, PromptTag#, newPromptTag#)
 import GHC.Types (IO(..))
-import System.IO.Unsafe (unsafeDupablePerformIO)
+import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import Unsafe.Coerce (unsafeCoerce)
 
 import Control.Effect.Internal.Debug
@@ -268,6 +268,13 @@ captureVM a = gcoerceWith (Coercion.sym $ anyCo @a) $
   IO.throwIO $! UnwindControl (coerce a)
 {-# INLINE captureVM #-}
 
+data PromptTag a = MkPromptTag {unPromptTag :: PromptTag# a}
+
+globalPromptTag :: PromptTag a
+globalPromptTag = unsafePerformIO $ IO \s1 -> case newPromptTag# s1 of
+  (# s2, pt #) -> (#s2, MkPromptTag pt #)
+{-# NOINLINE globalPromptTag #-}
+
 -- | Runs an 'EVM' action with a new prompt installed. The arguments specify
 -- what happens when control exits the action.
 promptVM
@@ -283,7 +290,7 @@ promptVM
 promptVM m onReturn onAbort onControl = IO.handle handleUnwind do
   -- TODO: Explain why it is crucial that the exception handler is installed
   -- outside of the frame where we replace the registers!
-  Result _ a <- IO (prompt# (unIO (packIOResult m)))
+  Result _ a <- IO (prompt# (unPromptTag globalPromptTag) (unIO (packIOResult m)))
   onReturn a
   where
     handleUnwind (UnwindAbort pid a) = onAbort pid a
@@ -307,7 +314,7 @@ promptVM_ m rs onCapture = promptVM m onReturn rethrowAbort onCapture where
 {-# INLINE promptVM_ #-}
 
 controlVM :: ((a -> EVM b) -> IO (Registers, b)) -> IO (Registers, a)
-controlVM f = IO (control0# f#) <&> \(Result rs a) -> (BoxRegisters rs, a) where
+controlVM f = IO (control0# (unPromptTag globalPromptTag) f#) <&> \(Result rs a) -> (BoxRegisters rs, a) where
   f# k# = unIO (f k <&> \(BoxRegisters rs, a) -> Result rs a) where
     k a = EVM# \rs -> IO $ k# \s -> (# s, Result rs a #)
 {-# INLINE controlVM #-}
